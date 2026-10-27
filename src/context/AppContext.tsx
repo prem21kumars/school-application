@@ -18,6 +18,7 @@ import type {
   QuestionDifficulty
 } from '../types';
 import { ApiService, CookieUtil } from '../services/api';
+import { generateProperQuestion, sanitizeQuestionIfNeeded } from '../utils/curriculumQuestionGenerator';
 
 interface AppContextType {
   // Current session & Auth
@@ -187,7 +188,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (bClasses && bClasses.length > 0) setClasses(bClasses);
           if (bSubjects && bSubjects.length > 0) setSubjects(bSubjects);
           if (bBooks && bBooks.length > 0) setBooks(bBooks);
-          if (bAssessments && bAssessments.length > 0) setAssessments(bAssessments);
+          if (bAssessments && bAssessments.length > 0) {
+            setAssessments(bAssessments.map(a => ({
+              ...a,
+              questions: (a.questions || []).map(q => sanitizeQuestionIfNeeded(q, a.title))
+            })));
+          }
           if (bAttempts && bAttempts.length > 0) setStudentAttempts(bAttempts);
           if (bSheets && bSheets.length > 0) setOfflineSheets(bSheets);
           if (bReattempts && bReattempts.length > 0) setReattemptRequests(bReattempts);
@@ -655,7 +661,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newAssessment: Assessment = {
       ...assessmentData,
       id: `asm-${Date.now()}`,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      questions: (assessmentData.questions || []).map(q => sanitizeQuestionIfNeeded(q, assessmentData.title))
     };
     setAssessments(prev => [newAssessment, ...prev]);
     ApiService.createAssessment(newAssessment).catch(err => console.error('Failed to sync assessment to backend', err));
@@ -943,129 +950,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const generated: Question[] = [];
     let counter = 1;
 
-    const cleanSentences = (text: string) => {
-      return text
-        .replace(/Figure \d+\.\d+/g, '')
-        .replace(/Activity \d+\.\d+/g, '')
-        .split(/(?<=[.?!])\s+/)
-        .map(s => s.trim())
-        .filter(s => s.length > 20 && !s.startsWith('Figure') && !s.startsWith('Activity'));
-    };
-
     for (const dist of params.markDistribution) {
       for (let i = 0; i < dist.count; i++) {
         const chapter = selectedChapters[(counter - 1) % selectedChapters.length] || selectedChapters[0];
         const rawExcerpt = chapter.sampleText || chapter.summary || chapter.title;
-        const sentences = cleanSentences(rawExcerpt);
-        const coreSentence = sentences[i % Math.max(1, sentences.length)] || rawExcerpt.slice(0, 100);
         const qId = `doc-q-${chapter.chapterNumber}-${Date.now()}-${counter++}`;
 
-        if (dist.marks === 1) {
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}] Identify the correct statement regarding: "${coreSentence.slice(0, 85)}..."`,
-            type: 'mcq',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
+        const properQ = generateProperQuestion(
+          {
+            bookTitle: effectiveBookTitle,
             chapterNumber: chapter.chapterNumber,
-            marks: 1,
-            difficulty: 'easy',
-            source: 'book_upload',
-            approved: true,
-            options: [
-              { id: `opt-${qId}-1`, text: 'Directly conforms to the standard principles stated in the textbook', isCorrect: true },
-              { id: `opt-${qId}-2`, text: 'Inverts the standard stoichiometric or physical proportion', isCorrect: false },
-              { id: `opt-${qId}-3`, text: 'Applies exclusively under extreme non-equilibrium limits', isCorrect: false },
-              { id: `opt-${qId}-4`, text: 'No relationship exists according to standard curriculum', isCorrect: false }
-            ],
-            explanation: `Extracted from ${effectiveBookTitle} - Chapter ${chapter.chapterNumber} (${chapter.pageRange}).`
-          });
-        } else if (dist.marks === 2) {
-          const promptVariants = [
-            `Define the core term illustrated in ${chapter.title}. State its primary characteristic or formula unit.`,
-            `State two distinguishing properties discussed in ${chapter.title} based on: "${coreSentence.slice(0, 70)}...".`,
-            `Give two real-world examples or applications of the concepts covered in ${chapter.title}.`
-          ];
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 2 Marks] ${promptVariants[i % promptVariants.length]}`,
-            type: 'short_answer',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
-            chapterNumber: chapter.chapterNumber,
-            marks: 2,
-            difficulty: 'easy',
-            source: 'book_upload',
-            approved: true,
-            correctAnswerText: `Accurate textbook definition and 2 distinguishing properties/units.`,
-            markingRubric: '1 mark for correct definition or first property, 1 mark for second property or SI unit.',
-            explanation: `Curriculum baseline from ${chapter.title}.`
-          });
-        } else if (dist.marks === 3) {
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 3 Marks] Reasoning & Calculation: Based on ${chapter.title}, answer the following: (a) Explain the underlying principle behind "${coreSentence.slice(0, 70)}..." (b) Calculate or justify the outcome under standard conditions.`,
-            type: 'key_in',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
-            chapterNumber: chapter.chapterNumber,
-            marks: 3,
-            difficulty: 'medium',
-            source: 'book_upload',
-            approved: true,
-            correctAnswerText: 'Standard value or balanced reaction according to textbook rule.',
-            explanation: `Solved using curriculum concepts from Chapter ${chapter.chapterNumber}.`,
-            markingRubric: '1 mark for theoretical principle, 1 mark for intermediate calculation step, 1 mark for correct conclusion/unit.'
-          });
-        } else if (dist.marks === 4) {
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 4 Marks] Structured Analysis: (a) State the primary rule described in ${chapter.title}. (b) Analyze the result or chemical/physical transformation under varying conditions described in "${coreSentence.slice(0, 75)}...".`,
-            type: 'short_answer',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
-            chapterNumber: chapter.chapterNumber,
-            marks: 4,
-            difficulty: 'medium',
-            source: 'book_upload',
-            approved: true,
-            correctAnswerText: `Core principle statement and detailed condition analysis.`,
-            markingRubric: '2 marks for theoretical principle, 2 marks for analysis under varied conditions.',
-            explanation: `Derived from Chapter ${chapter.chapterNumber}: ${chapter.title}.`
-          });
-        } else if (dist.marks === 5) {
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 5 Marks] Comprehensive Long Answer: Elaborate on the core concepts in ${chapter.title} with a complete derivation, structural formula / ray diagram, and experimental validation based on: "${coreSentence.slice(0, 80)}...".`,
-            type: 'long_answer',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
-            chapterNumber: chapter.chapterNumber,
-            marks: 5,
-            difficulty: 'medium',
-            source: 'book_upload',
-            approved: true,
-            correctAnswerText: `Detailed explanation including mathematical formulation/chemical mechanism and graphical breakdown.`,
-            markingRubric: '2 marks for theory, 2 marks for derivation / diagram, 1 mark for real-world application.',
-            explanation: `In-depth syllabus evaluation from Chapter ${chapter.chapterNumber}.`
-          });
-        } else {
-          generated.push({
-            id: qId,
-            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: ${dist.marks} Marks] Section E Case Study / Major Problem: Read the following textbook excerpt from ${chapter.title}: "${coreSentence}". (a) Identify and explain the two main mechanisms (4 Marks). (b) Deduce the quantitative formulas and solve for standard parameters (4 Marks). (c) State potential errors and safety/accuracy precautions (${dist.marks - 8} Marks).`,
-            type: 'long_answer',
-            subjectId: effectiveSubjectId,
-            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
-            chapterNumber: chapter.chapterNumber,
-            marks: dist.marks,
-            difficulty: 'hard',
-            source: 'book_upload',
-            approved: true,
-            correctAnswerText: `Comprehensive multi-part solution with full rubrics.`,
-            markingRubric: `Part (a): 4 marks, Part (b): 4 marks, Part (c): ${dist.marks - 8} marks.`,
-            explanation: `Advanced Bloom's Taxonomy evaluation from ${chapter.title}.`
-          });
-        }
+            chapterTitle: chapter.title,
+            chapterText: rawExcerpt,
+            subjectId: effectiveSubjectId
+          },
+          dist.marks,
+          counter,
+          qId
+        );
+
+        generated.push(properQ);
       }
     }
 

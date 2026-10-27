@@ -11,6 +11,7 @@ import {
   Flag
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import { sanitizeQuestionIfNeeded } from '../../utils/curriculumQuestionGenerator';
 
 interface ExamRoomProps {
   assessment: Assessment;
@@ -46,7 +47,7 @@ export const ExamRoom: React.FC<ExamRoomProps> = ({ assessment, attempt, onExit 
   const [appealReason, setAppealReason] = useState('');
   const [isAppealSubmitted, setIsAppealSubmitted] = useState(currentAttempt.reattemptRequested || false);
 
-  const questions = assessment.questions;
+  const questions = (assessment.questions || []).map(q => sanitizeQuestionIfNeeded(q, assessment.title));
   const currentQ = questions[currentQuestionIdx] || questions[0];
 
   const isTerminated = currentAttempt.status === 'malpractice_terminated';
