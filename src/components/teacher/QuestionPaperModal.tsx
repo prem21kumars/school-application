@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { ApiService } from '../../services/api';
 import type { 
   Assessment, 
   Question, 
@@ -17,8 +18,24 @@ import {
   Printer, 
   Shuffle,
   X,
-  Layers
+  Layers,
+  UploadCloud,
+  FileText,
+  Copy,
+  AlertCircle,
+  Eye,
+  Loader2,
+  Zap,
+  Key
 } from 'lucide-react';
+
+import { 
+  processUploadedDocument, 
+  processPastedBookCopy, 
+  type ExtractedDocument 
+} from '../../utils/documentExtractor';
+
+import { GroqStorage, generateQuestionsWithGroq } from '../../services/groqService';
 
 import { FeedbackModal } from '../common/FeedbackModal';
 
@@ -108,6 +125,12 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
   const [aiMarks, setAiMarks] = useState(2);
   const [aiDifficulty, setAiDifficulty] = useState<QuestionDifficulty>('medium');
   const [aiCount, setAiCount] = useState(5);
+  const [aiMarkMode, setAiMarkMode] = useState<'distribution' | 'single'>('distribution');
+  const [aiDist1m, setAiDist1m] = useState(2);
+  const [aiDist2m, setAiDist2m] = useState(3);
+  const [aiDist3m, setAiDist3m] = useState(2);
+  const [aiDist4m, setAiDist4m] = useState(2);
+  const [aiDist5m, setAiDist5m] = useState(1);
   const [aiPrompt, setAiPrompt] = useState('Focus on real-world practical applications, numerical problem solving, and standard curriculum guidelines.');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
   const [candidateAiQuestions, setCandidateAiQuestions] = useState<Question[]>([]);
@@ -118,9 +141,31 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
   const [selectedChapterNumbers, setSelectedChapterNumbers] = useState<number[]>([1, 2, 3]);
   const [dist1m, setDist1m] = useState(3);
   const [dist2m, setDist2m] = useState(2);
+  const [dist3m, setDist3m] = useState(2);
+  const [dist4m, setDist4m] = useState(1);
   const [dist5m, setDist5m] = useState(1);
   const [dist10m, setDist10m] = useState(0);
   const [isBookGenerating, setIsBookGenerating] = useState(false);
+  const [candidateBookQuestions, setCandidateBookQuestions] = useState<Question[]>([]);
+  const [bookGenSuccess, setBookGenSuccess] = useState<string | null>(null);
+  const [bookGenError, setBookGenError] = useState<string | null>(null);
+
+  // Groq AI Integration State
+  const [useGroqAi, setUseGroqAi] = useState(true);
+  const [groqApiKeyInput, setGroqApiKeyInput] = useState(GroqStorage.getApiKey());
+  const [groqModel, setGroqModel] = useState(GroqStorage.getModel());
+  const [showGroqConfigModal, setShowGroqConfigModal] = useState(false);
+
+  // Document Upload (PDF, Word, Text) & Book Copy State
+  const [docUploadMode, setDocUploadMode] = useState<'upload' | 'paste' | 'library'>('upload');
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [fileUploadError, setFileUploadError] = useState<string | null>(null);
+  const [uploadedDocMeta, setUploadedDocMeta] = useState<ExtractedDocument | null>(null);
+  const [pastedTitle, setPastedTitle] = useState('');
+  const [pastedAuthor, setPastedAuthor] = useState('');
+  const [pastedText, setPastedText] = useState('');
+  const [showExtractedPreview, setShowExtractedPreview] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Sets & Print Preview State
   const [previewSets, setPreviewSets] = useState<QuestionPaperSet[] | null>(null);
@@ -128,9 +173,29 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
   const [showAnswerKeyInPrint, setShowAnswerKeyInPrint] = useState(false);
 
   const currentSubject = subjects.find(s => s.id === selectedSubjectId) || subjects[0];
-  const currentBook = books.find(b => b.id === selectedBookId) || books[0];
+  const currentBook = uploadedDocMeta 
+    ? {
+        id: selectedBookId || 'bk-uploaded',
+        title: uploadedDocMeta.title,
+        subjectId: selectedSubjectId,
+        grade: uploadedDocMeta.grade || 'Grade 10',
+        author: uploadedDocMeta.author || 'Uploaded Document',
+        chapters: uploadedDocMeta.chapters
+      }
+    : (books.find(b => b.id === selectedBookId) || books[0]);
 
   const totalCalculatedMarks = questions.reduce((sum, q) => sum + q.marks, 0);
+
+  // Sync Groq AI config status from backend on mount
+  useEffect(() => {
+    ApiService.getGroqConfig()
+      .then(cfg => {
+        if (cfg && cfg.configured && cfg.model) {
+          setGroqModel(cfg.model);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Handlers for Add Field across Dropdowns
   const handleSaveNewChapter = (e?: React.FormEvent) => {
@@ -205,18 +270,104 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
     setNewBookInitialChapterTitle('');
   };
 
+  // Document File Upload Handler (PDF, Word, Text)
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingFile(true);
+    setFileUploadError(null);
+
+    try {
+      const extracted = await processUploadedDocument(file);
+      setUploadedDocMeta(extracted);
+
+      const created = addBook({
+        title: extracted.title,
+        author: extracted.author || 'Uploaded Document',
+        grade: extracted.grade || 'Grade 10',
+        subjectId: selectedSubjectId,
+        chapters: extracted.chapters
+      });
+
+      setSelectedBookId(created.id);
+      setSelectedChapterNumbers(extracted.chapters.map(c => c.chapterNumber));
+    } catch (err: any) {
+      console.error('File parsing error:', err);
+      setFileUploadError(err?.message || 'Failed to extract text from document. Please ensure it is a valid PDF, Word (.docx), or text file.');
+    } finally {
+      setIsProcessingFile(false);
+      e.target.value = '';
+    }
+  };
+
+  // Pasted Book Copy / Text Handler
+  const handleProcessPastedCopy = () => {
+    if (!pastedText.trim()) return;
+    setIsProcessingFile(true);
+    setFileUploadError(null);
+
+    try {
+      const extracted = processPastedBookCopy(
+        pastedTitle || 'Custom Syllabus Material',
+        pastedText,
+        pastedAuthor || 'Pasted Book Copy',
+        'Grade 10'
+      );
+      setUploadedDocMeta(extracted);
+
+      const created = addBook({
+        title: extracted.title,
+        author: extracted.author,
+        grade: extracted.grade,
+        subjectId: selectedSubjectId,
+        chapters: extracted.chapters
+      });
+
+      setSelectedBookId(created.id);
+      setSelectedChapterNumbers(extracted.chapters.map(c => c.chapterNumber));
+      setPastedText('');
+      setPastedTitle('');
+      setPastedAuthor('');
+    } catch (err: any) {
+      console.error('Pasted text extraction error:', err);
+      setFileUploadError('Failed to process pasted text.');
+    } finally {
+      setIsProcessingFile(false);
+    }
+  };
+
+  // AI Generation Counts & Totals
+  const aiTotalCount = aiMarkMode === 'distribution'
+    ? (aiDist1m + aiDist2m + aiDist3m + aiDist4m + aiDist5m)
+    : aiCount;
+
+  const aiTotalMarks = aiMarkMode === 'distribution'
+    ? (aiDist1m * 1 + aiDist2m * 2 + aiDist3m * 3 + aiDist4m * 4 + aiDist5m * 5)
+    : (aiMarks * aiCount);
+
   // AI Generation Handler
   const handleTriggerAIGeneration = async () => {
+    if (aiTotalCount === 0) return;
     setIsAiGenerating(true);
     try {
+      const markDistribution = [
+        { marks: 1, count: aiDist1m },
+        { marks: 2, count: aiDist2m },
+        { marks: 3, count: aiDist3m },
+        { marks: 4, count: aiDist4m },
+        { marks: 5, count: aiDist5m }
+      ].filter(d => d.count > 0);
+
       const generated = await generateAIQuestions({
         subjectId: selectedSubjectId,
         chapterId: aiChapterId || currentSubject.chapters[0]?.id || 'ch-phy-1',
         questionTypes: aiQuestionTypes,
         marks: aiMarks,
         difficulty: aiDifficulty,
-        count: aiCount,
-        customPrompt: aiPrompt
+        count: aiTotalCount,
+        customPrompt: aiPrompt,
+        markDistribution: aiMarkMode === 'distribution' ? markDistribution : [{ marks: aiMarks, count: aiCount }]
       });
       setCandidateAiQuestions(generated);
       // Pre-select all generated candidates so "Select All" / "Add All" is immediately ready
@@ -262,27 +413,170 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
     setSelectedCandidateIds([]);
   };
 
-  // Book Generation Handler
-  const handleTriggerBookGeneration = async () => {
-    setIsBookGenerating(true);
+  const handleSaveGroqConfig = async () => {
+    const trimmed = groqApiKeyInput.trim();
+    if (!trimmed) {
+      setBookGenError('Please enter a valid Groq API key.');
+      return;
+    }
+    GroqStorage.setApiKey(trimmed);
+    GroqStorage.setModel(groqModel);
+    setBookGenError(null);
+    setBookGenSuccess('⚡ Groq API Key saved & syncing with backend...');
+
+    // Auto-select chapters if none selected
+    if (selectedChapterNumbers.length === 0 && currentBook?.chapters?.length) {
+      setSelectedChapterNumbers(currentBook.chapters.map(c => c.chapterNumber));
+    }
+
     try {
-      const markDistribution = [
-        { marks: 1, count: dist1m },
-        { marks: 2, count: dist2m },
-        { marks: 5, count: dist5m },
-        { marks: 10, count: dist10m }
-      ].filter(d => d.count > 0);
+      const res = await ApiService.saveGroqConfig({ apiKey: trimmed, model: groqModel });
+      if (res && res.success) {
+        setBookGenSuccess(`⚡ Groq AI Key synced to backend successfully! Model: ${res.model || groqModel}`);
+      }
+    } catch (e) {
+      console.warn('Backend Groq sync notice:', e);
+    }
+    setShowGroqConfigModal(false);
+  };
 
-      const totalCount = dist1m + dist2m + dist5m + dist10m;
+  // Book Generation Handler - Send directly to Groq AI in backend or local engine
+  const handleTriggerBookGeneration = async () => {
+    if (!uploadedDocMeta) {
+      setBookGenError('Please upload a PDF or Word document first. Questions can only be generated from an uploaded document.');
+      return;
+    }
 
-      const generated = await generateBookQuestions({
-        bookId: selectedBookId,
-        chapterNumbers: selectedChapterNumbers,
-        markDistribution,
-        totalQuestions: totalCount
-      });
+    // Auto-select all chapters if none selected so the teacher is never blocked
+    let chaptersToUse = selectedChapterNumbers;
+    if (chaptersToUse.length === 0 && uploadedDocMeta.chapters.length > 0) {
+      chaptersToUse = uploadedDocMeta.chapters.map(c => c.chapterNumber);
+      setSelectedChapterNumbers(chaptersToUse);
+    }
+
+    if (chaptersToUse.length === 0) {
+      setBookGenError('Please select at least one chapter from the uploaded document to generate questions.');
+      return;
+    }
+
+    const markDistribution = [
+      { marks: 1, count: dist1m },
+      { marks: 2, count: dist2m },
+      { marks: 3, count: dist3m },
+      { marks: 4, count: dist4m },
+      { marks: 5, count: dist5m },
+      { marks: 10, count: dist10m }
+    ].filter(d => d.count > 0);
+
+    const totalCount = dist1m + dist2m + dist3m + dist4m + dist5m + dist10m;
+    if (totalCount === 0) {
+      setBookGenError('Please set at least 1 question count in the marks distribution.');
+      return;
+    }
+
+    const effectiveGroqKey = groqApiKeyInput.trim() || GroqStorage.getApiKey();
+
+    // If teacher selected Groq AI but has no key configured yet
+    if (useGroqAi && !effectiveGroqKey) {
+      setShowGroqConfigModal(true);
+      setBookGenError('Please enter your Groq API Key below to generate questions with Groq AI.');
+      return;
+    }
+
+    if (useGroqAi && effectiveGroqKey) {
+      GroqStorage.setApiKey(effectiveGroqKey);
+      GroqStorage.setModel(groqModel);
+      // Sync key to backend database
+      ApiService.saveGroqConfig({ apiKey: effectiveGroqKey, model: groqModel }).catch(() => {});
+    }
+
+    setIsBookGenerating(true);
+    setBookGenError(null);
+    setBookGenSuccess(null);
+
+    try {
+      // STRICT FILTER: ONLY chapters explicitly selected by the teacher
+      const filteredChapters = uploadedDocMeta.chapters.filter(c => chaptersToUse.includes(c.chapterNumber));
+
+      if (filteredChapters.length === 0) {
+        throw new Error('Please select at least one valid chapter from the uploaded document.');
+      }
+
+      let generated: Question[] = [];
+
+      if (useGroqAi && effectiveGroqKey) {
+        // 1. Attempt backend Groq generation with user's key
+        try {
+          generated = await generateBookQuestions({
+            bookId: selectedBookId,
+            chapterNumbers: chaptersToUse,
+            markDistribution,
+            totalQuestions: totalCount,
+            chapters: filteredChapters,
+            subjectId: selectedSubjectId,
+            bookTitle: uploadedDocMeta.title,
+            groqApiKey: effectiveGroqKey,
+            groqModel: groqModel,
+            useGroqAi: true
+          });
+        } catch (bkErr) {
+          console.warn('Backend Groq generation notice, trying client direct Groq:', bkErr);
+        }
+
+        // 2. If backend was offline or didn't return AI questions, fallback to direct client Groq
+        if (!generated || generated.length === 0 || generated[0]?.source === 'book_upload') {
+          const targetChapter = filteredChapters[0];
+          const chapterExcerpt = filteredChapters
+            .map(c => `Chapter ${c.chapterNumber}: ${c.title}\n${c.sampleText || c.summary}`)
+            .join('\n\n') || uploadedDocMeta.rawText.slice(0, 4500);
+
+          try {
+            const clientGenerated = await generateQuestionsWithGroq({
+              apiKey: effectiveGroqKey,
+              model: groqModel,
+              documentTitle: uploadedDocMeta.title,
+              chapterNumber: targetChapter.chapterNumber,
+              chapterTitle: targetChapter.title,
+              documentExcerpt: chapterExcerpt,
+              markDistribution,
+              subjectId: selectedSubjectId,
+              difficulty: 'medium'
+            });
+            if (clientGenerated && clientGenerated.length > 0) {
+              generated = clientGenerated;
+            }
+          } catch (directErr) {
+            console.warn('Client Groq call also noted:', directErr);
+          }
+        }
+      } else {
+        generated = await generateBookQuestions({
+          bookId: selectedBookId,
+          chapterNumbers: chaptersToUse,
+          markDistribution,
+          totalQuestions: totalCount,
+          chapters: filteredChapters,
+          subjectId: selectedSubjectId,
+          bookTitle: uploadedDocMeta.title
+        });
+      }
+
+      if (!generated || generated.length === 0) {
+        throw new Error('No questions could be generated. Please verify mark distribution.');
+      }
 
       setQuestions(prev => [...prev, ...generated.map(q => ({ ...q, approved: true }))]);
+      setCandidateBookQuestions(generated);
+
+      const totalMarks = generated.reduce((s, q) => s + q.marks, 0);
+      const chLabel = selectedChapterNumbers.length === 1 
+        ? `Ch ${selectedChapterNumbers[0]}` 
+        : `Chapters ${selectedChapterNumbers.join(', ')}`;
+      const aiProvider = useGroqAi ? `Groq AI (${groqModel})` : 'Local Engine';
+      setBookGenSuccess(`⚡ Successfully generated ${generated.length} questions (${totalMarks} Marks) via ${aiProvider} strictly from ${chLabel} of "${uploadedDocMeta.title}" and added to Paper Manifest!`);
+    } catch (err: any) {
+      console.error('Book question generation error:', err);
+      setBookGenError(err?.message || 'Failed to generate questions with Groq AI. Please check your API key.');
     } finally {
       setIsBookGenerating(false);
     }
@@ -558,8 +852,8 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                     <BookOpen size={16} />
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Book / Content Upload</div>
-                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Select chapters & mark quotas</div>
+                    <div style={{ fontWeight: 700, fontSize: '0.85rem' }}>Upload PDF / Word / Book</div>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Extract & generate from document</div>
                   </div>
                 </button>
 
@@ -924,37 +1218,315 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                   </div>
                 </div>
 
-                {/* Row 2: Marks and Count with Matching Height Labels */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', alignItems: 'flex-start' }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', height: '24px', marginBottom: '0.35rem' }}>
-                      <label className="form-label" style={{ margin: 0 }}>Marks Per Question</label>
+                {/* Mark Selection & Distribution Controls */}
+                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.75rem', padding: '1rem' }}>
+                  {/* Mode Toggle Header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.875rem', fontWeight: 700, color: '#0f172a' }}>Configure Question Marks & Count</span>
+                      <span className="badge badge-purple" style={{ fontSize: '0.75rem' }}>
+                        {aiTotalCount} Questions ({aiTotalMarks} Marks)
+                      </span>
                     </div>
-                    <select 
-                      value={aiMarks} 
-                      onChange={(e) => setAiMarks(Number(e.target.value))}
-                      className="form-select"
-                    >
-                      <option value={1}>1 Mark (Objective / MCQ)</option>
-                      <option value={2}>2 Marks (Short Concept)</option>
-                      <option value={3}>3 Marks (Numerical Calculation)</option>
-                      <option value={5}>5 Marks (Long Derivation)</option>
-                    </select>
+
+                    {/* Mode Tabs */}
+                    <div style={{ display: 'inline-flex', background: '#e2e8f0', borderRadius: '0.5rem', padding: '2px' }}>
+                      <button
+                        type="button"
+                        onClick={() => setAiMarkMode('distribution')}
+                        style={{
+                          padding: '0.35rem 0.75rem',
+                          borderRadius: '0.375rem',
+                          border: 'none',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: aiMarkMode === 'distribution' ? '#ffffff' : 'transparent',
+                          color: aiMarkMode === 'distribution' ? '#4f46e5' : '#64748b',
+                          boxShadow: aiMarkMode === 'distribution' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        🎛️ Multi-Mark Distribution (2M, 3M, 4M, 5M)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAiMarkMode('single')}
+                        style={{
+                          padding: '0.35rem 0.75rem',
+                          borderRadius: '0.375rem',
+                          border: 'none',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          background: aiMarkMode === 'single' ? '#ffffff' : 'transparent',
+                          color: aiMarkMode === 'single' ? '#4f46e5' : '#64748b',
+                          boxShadow: aiMarkMode === 'single' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        🎯 Single Mark Per Question
+                      </button>
+                    </div>
                   </div>
 
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', height: '24px', marginBottom: '0.35rem' }}>
-                      <label className="form-label" style={{ margin: 0 }}>Candidate Count to Generate</label>
+                  {/* Mode 1: Multi-Mark Distribution */}
+                  {aiMarkMode === 'distribution' && (
+                    <div>
+                      {/* Quick Presets */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.725rem', color: '#64748b', fontWeight: 600 }}>Presets:</span>
+                        <button
+                          type="button"
+                          onClick={() => { setAiDist1m(2); setAiDist2m(3); setAiDist3m(2); setAiDist4m(1); setAiDist5m(1); }}
+                          style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '0.375rem', border: '1px solid #cbd5e1', background: '#ffffff', cursor: 'pointer', color: '#334155' }}
+                        >
+                          Standard 25M Paper
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setAiDist1m(0); setAiDist2m(4); setAiDist3m(3); setAiDist4m(0); setAiDist5m(0); }}
+                          style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '0.375rem', border: '1px solid #cbd5e1', background: '#ffffff', cursor: 'pointer', color: '#334155' }}
+                        >
+                          2M & 3M Focus
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setAiDist1m(0); setAiDist2m(0); setAiDist3m(2); setAiDist4m(2); setAiDist5m(2); }}
+                          style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '0.375rem', border: '1px solid #cbd5e1', background: '#ffffff', cursor: 'pointer', color: '#334155' }}
+                        >
+                          3M, 4M & 5M Higher Marks
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setAiDist1m(0); setAiDist2m(0); setAiDist3m(0); setAiDist4m(0); setAiDist5m(0); }}
+                          style={{ fontSize: '0.7rem', padding: '0.2rem 0.5rem', borderRadius: '0.375rem', border: '1px solid #e2e8f0', background: '#ffffff', cursor: 'pointer', color: '#ef4444' }}
+                        >
+                          Clear All
+                        </button>
+                      </div>
+
+                      {/* 5 Mark Breakdown Cards */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
+                        {/* 1 Mark */}
+                        <div style={{ background: '#ffffff', padding: '0.75rem', borderRadius: '0.5rem', border: `1.5px solid ${aiDist1m > 0 ? '#818cf8' : '#e2e8f0'}`, textAlign: 'center' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4338ca' }}>1 Mark</span>
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>MCQ / Obj</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.35rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => setAiDist1m(prev => Math.max(0, prev - 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={aiDist1m}
+                              onChange={(e) => setAiDist1m(Math.max(0, Number(e.target.value)))}
+                              className="form-input"
+                              style={{ textAlign: 'center', padding: '0.25rem 0.35rem', fontSize: '0.875rem', fontWeight: 700 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setAiDist1m(prev => Math.min(20, prev + 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.35rem' }}>
+                            {aiDist1m * 1} marks
+                          </div>
+                        </div>
+
+                        {/* 2 Marks */}
+                        <div style={{ background: '#ffffff', padding: '0.75rem', borderRadius: '0.5rem', border: `1.5px solid ${aiDist2m > 0 ? '#818cf8' : '#e2e8f0'}`, textAlign: 'center' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4338ca' }}>2 Marks</span>
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>Short Concept</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.35rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => setAiDist2m(prev => Math.max(0, prev - 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={aiDist2m}
+                              onChange={(e) => setAiDist2m(Math.max(0, Number(e.target.value)))}
+                              className="form-input"
+                              style={{ textAlign: 'center', padding: '0.25rem 0.35rem', fontSize: '0.875rem', fontWeight: 700 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setAiDist2m(prev => Math.min(20, prev + 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.35rem' }}>
+                            {aiDist2m * 2} marks
+                          </div>
+                        </div>
+
+                        {/* 3 Marks */}
+                        <div style={{ background: '#ffffff', padding: '0.75rem', borderRadius: '0.5rem', border: `1.5px solid ${aiDist3m > 0 ? '#818cf8' : '#e2e8f0'}`, textAlign: 'center' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4338ca' }}>3 Marks</span>
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>Numerical</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.35rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => setAiDist3m(prev => Math.max(0, prev - 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={aiDist3m}
+                              onChange={(e) => setAiDist3m(Math.max(0, Number(e.target.value)))}
+                              className="form-input"
+                              style={{ textAlign: 'center', padding: '0.25rem 0.35rem', fontSize: '0.875rem', fontWeight: 700 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setAiDist3m(prev => Math.min(20, prev + 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.35rem' }}>
+                            {aiDist3m * 3} marks
+                          </div>
+                        </div>
+
+                        {/* 4 Marks */}
+                        <div style={{ background: '#ffffff', padding: '0.75rem', borderRadius: '0.5rem', border: `1.5px solid ${aiDist4m > 0 ? '#818cf8' : '#e2e8f0'}`, textAlign: 'center' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4338ca' }}>4 Marks</span>
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>Applied Prob</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.35rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => setAiDist4m(prev => Math.max(0, prev - 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={aiDist4m}
+                              onChange={(e) => setAiDist4m(Math.max(0, Number(e.target.value)))}
+                              className="form-input"
+                              style={{ textAlign: 'center', padding: '0.25rem 0.35rem', fontSize: '0.875rem', fontWeight: 700 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setAiDist4m(prev => Math.min(20, prev + 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.35rem' }}>
+                            {aiDist4m * 4} marks
+                          </div>
+                        </div>
+
+                        {/* 5 Marks */}
+                        <div style={{ background: '#ffffff', padding: '0.75rem', borderRadius: '0.5rem', border: `1.5px solid ${aiDist5m > 0 ? '#818cf8' : '#e2e8f0'}`, textAlign: 'center' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4338ca' }}>5 Marks</span>
+                            <span style={{ fontSize: '0.65rem', color: '#64748b' }}>Long Deriv</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.35rem' }}>
+                            <button
+                              type="button"
+                              onClick={() => setAiDist5m(prev => Math.max(0, prev - 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              -
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={20}
+                              value={aiDist5m}
+                              onChange={(e) => setAiDist5m(Math.max(0, Number(e.target.value)))}
+                              className="form-input"
+                              style={{ textAlign: 'center', padding: '0.25rem 0.35rem', fontSize: '0.875rem', fontWeight: 700 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setAiDist5m(prev => Math.min(20, prev + 1))}
+                              style={{ width: '28px', height: '28px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#f8fafc', cursor: 'pointer', fontWeight: 'bold' }}
+                            >
+                              +
+                            </button>
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: '#64748b', marginTop: '0.35rem' }}>
+                            {aiDist5m * 5} marks
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <input 
-                      type="number" 
-                      min={1} 
-                      max={10} 
-                      value={aiCount} 
-                      onChange={(e) => setAiCount(Number(e.target.value))}
-                      className="form-input" 
-                    />
-                  </div>
+                  )}
+
+                  {/* Mode 2: Single Mark */}
+                  {aiMarkMode === 'single' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', alignItems: 'flex-start' }}>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', height: '24px', marginBottom: '0.35rem' }}>
+                          <label className="form-label" style={{ margin: 0 }}>Marks Per Question</label>
+                        </div>
+                        <select 
+                          value={aiMarks} 
+                          onChange={(e) => setAiMarks(Number(e.target.value))}
+                          className="form-select"
+                        >
+                          <option value={1}>1 Mark (Objective / MCQ)</option>
+                          <option value={2}>2 Marks (Short Concept)</option>
+                          <option value={3}>3 Marks (Numerical Calculation / Reasoning)</option>
+                          <option value={4}>4 Marks (Applied Problem / Analysis)</option>
+                          <option value={5}>5 Marks (Long Derivation / Essay)</option>
+                          <option value={10}>10 Marks (Comprehensive Section)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', height: '24px', marginBottom: '0.35rem' }}>
+                          <label className="form-label" style={{ margin: 0 }}>Candidate Count to Generate</label>
+                        </div>
+                        <input 
+                          type="number" 
+                          min={1} 
+                          max={20} 
+                          value={aiCount} 
+                          onChange={(e) => setAiCount(Number(e.target.value))}
+                          className="form-input" 
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Prompt Guidance with Quick Keyword Chips */}
@@ -1012,7 +1584,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                   <button 
                     type="button"
                     onClick={handleTriggerAIGeneration} 
-                    disabled={isAiGenerating} 
+                    disabled={isAiGenerating || aiTotalCount === 0} 
                     className="btn-primary"
                     style={{ 
                       padding: '0.75rem 1.5rem',
@@ -1020,15 +1592,18 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                       alignItems: 'center',
                       gap: '0.5rem',
                       fontWeight: 700,
-                      background: 'linear-gradient(135deg, #4f46e5 0%, #4338ca 100%)',
-                      boxShadow: '0 4px 12px rgba(79, 70, 229, 0.25)'
+                      background: isAiGenerating || aiTotalCount === 0 ? '#94a3b8' : 'linear-gradient(135deg, #4f46e5 0%, #4338ca 100%)',
+                      boxShadow: isAiGenerating || aiTotalCount === 0 ? 'none' : '0 4px 12px rgba(79, 70, 229, 0.25)',
+                      cursor: isAiGenerating || aiTotalCount === 0 ? 'not-allowed' : 'pointer'
                     }}
                   >
                     <Sparkles size={16} />
-                    {isAiGenerating ? 'Generating Candidate Questions...' : `Generate ${aiCount} Candidate Questions`}
+                    {isAiGenerating 
+                      ? 'Generating Candidate Questions...' 
+                      : `Generate ${aiTotalCount} Candidate Questions (${aiTotalMarks} Marks)`}
                   </button>
                   <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                    Review and cherry-pick candidate questions below
+                    {aiTotalCount === 0 ? 'Set at least 1 question to generate' : 'Review and cherry-pick candidate questions below'}
                   </span>
                 </div>
 
@@ -1183,98 +1758,386 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
               </div>
             )}
 
-            {/* WORKBENCH B: BOOK / CONTENT UPLOAD */}
+            {/* WORKBENCH B: DIGITAL TEXTBOOK / PDF / WORD / BOOK COPY EXTRACTION */}
             {creationMethod === 'book_upload' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <BookOpen size={18} color="#7c3aed" />
-                  <h3 style={{ fontSize: '1.125rem', color: '#0f172a' }}>Book & Curriculum Upload Generator (7.4.2)</h3>
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-                    <label className="form-label" style={{ margin: 0 }}>Select Digital Textbook / Syllabus Source</label>
-                    <button 
-                      type="button" 
-                      onClick={() => setShowInlineAddBook(!showInlineAddBook)}
-                      style={{ background: 'none', border: 'none', color: '#7c3aed', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
-                    >
-                      <Plus size={12} /> {showInlineAddBook ? 'Cancel' : '+ Add / Upload Book'}
-                    </button>
-                  </div>
-                  <select 
-                    value={selectedBookId} 
-                    onChange={(e) => {
-                      if (e.target.value === '__add_new__') {
-                        setShowInlineAddBook(true);
-                      } else {
-                        setSelectedBookId(e.target.value);
-                        setShowInlineAddBook(false);
-                      }
-                    }}
-                    className="form-select"
-                  >
-                    {books.map(b => (
-                      <option key={b.id} value={b.id}>{b.title} ({b.author})</option>
-                    ))}
-                    <option value="__add_new__" style={{ fontWeight: 700, color: '#7c3aed' }}>➕ + Add / Upload New Book Resource (New Field)...</option>
-                  </select>
-
-                  {/* Inline Add Book Panel */}
-                  {showInlineAddBook && (
-                    <div style={{ background: '#faf5ff', border: '1.5px dashed #c084fc', borderRadius: '0.625rem', padding: '1rem', marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#6b21a8' }}>
-                        📖 Add Digital Textbook / Reference Source
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 0.8fr', gap: '0.5rem' }}>
-                        <input 
-                          type="text" 
-                          placeholder="Book Title (e.g. Modern Physics Concepts)" 
-                          value={newBookTitle} 
-                          onChange={e => setNewBookTitle(e.target.value)}
-                          className="form-input"
-                          style={{ fontSize: '0.8125rem' }}
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="Author (e.g. Cambridge Board)" 
-                          value={newBookAuthor} 
-                          onChange={e => setNewBookAuthor(e.target.value)}
-                          className="form-input"
-                          style={{ fontSize: '0.8125rem' }}
-                        />
-                        <input 
-                          type="text" 
-                          placeholder="Grade (e.g. Grade 10)" 
-                          value={newBookGrade} 
-                          onChange={e => setNewBookGrade(e.target.value)}
-                          className="form-input"
-                          style={{ fontSize: '0.8125rem' }}
-                        />
-                      </div>
-                      <input 
-                        type="text" 
-                        placeholder="Initial Chapter Title (e.g. Ch 1: Motion & Gravitation)" 
-                        value={newBookInitialChapterTitle} 
-                        onChange={e => setNewBookInitialChapterTitle(e.target.value)}
-                        className="form-input"
-                        style={{ fontSize: '0.8125rem' }}
-                      />
-                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-                        <button type="button" onClick={() => setShowInlineAddBook(false)} className="btn-secondary btn-sm" style={{ fontSize: '0.7rem' }}>
-                          Cancel
-                        </button>
-                        <button type="button" onClick={() => handleSaveNewBook()} className="btn-primary btn-sm" style={{ background: '#7c3aed', borderColor: '#7c3aed', fontSize: '0.7rem' }}>
-                          <CheckCircle2 size={13} /> Save & Select Book
-                        </button>
+                {/* Header & Source Mode Selector */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <BookOpen size={20} color="#7c3aed" />
+                    <div>
+                      <h3 style={{ fontSize: '1.125rem', color: '#0f172a', margin: 0, fontWeight: 800 }}>
+                        PDF, Word & Book Document Question Generator (7.4.2)
+                      </h3>
+                      <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.15rem' }}>
+                        Upload curriculum documents (PDF, DOCX) or paste book copy to automatically extract chapters & generate questions
                       </div>
                     </div>
-                  )}
+                  </div>
+
+                  {/* Mode Switcher Tabs */}
+                  <div style={{ display: 'inline-flex', background: '#f3e8ff', borderRadius: '0.5rem', padding: '3px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setDocUploadMode('upload')}
+                      style={{
+                        padding: '0.4rem 0.85rem',
+                        borderRadius: '0.375rem',
+                        border: 'none',
+                        fontSize: '0.775rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: docUploadMode === 'upload' ? '#7c3aed' : 'transparent',
+                        color: docUploadMode === 'upload' ? '#ffffff' : '#7c3aed',
+                        boxShadow: docUploadMode === 'upload' ? '0 1px 4px rgba(124, 58, 237, 0.25)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <UploadCloud size={14} /> Upload PDF / Word
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocUploadMode('paste')}
+                      style={{
+                        padding: '0.4rem 0.85rem',
+                        borderRadius: '0.375rem',
+                        border: 'none',
+                        fontSize: '0.775rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: docUploadMode === 'paste' ? '#7c3aed' : 'transparent',
+                        color: docUploadMode === 'paste' ? '#ffffff' : '#7c3aed',
+                        boxShadow: docUploadMode === 'paste' ? '0 1px 4px rgba(124, 58, 237, 0.25)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <Copy size={14} /> Paste Book Copy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDocUploadMode('library')}
+                      style={{
+                        padding: '0.4rem 0.85rem',
+                        borderRadius: '0.375rem',
+                        border: 'none',
+                        fontSize: '0.775rem',
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                        background: docUploadMode === 'library' ? '#7c3aed' : 'transparent',
+                        color: docUploadMode === 'library' ? '#ffffff' : '#7c3aed',
+                        boxShadow: docUploadMode === 'library' ? '0 1px 4px rgba(124, 58, 237, 0.25)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <BookOpen size={14} /> Library Books
+                    </button>
+                  </div>
                 </div>
+
+                {/* MODE 1: FILE UPLOAD (PDF, Word, Text) */}
+                {docUploadMode === 'upload' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleFileUpload} 
+                      accept=".pdf,.docx,.doc,.txt,.rtf" 
+                      style={{ display: 'none' }} 
+                    />
+
+                    {/* Drag and Drop Zone */}
+                    <div 
+                      onClick={() => !isProcessingFile && fileInputRef.current?.click()}
+                      style={{ 
+                        border: '2px dashed #c084fc', 
+                        borderRadius: '0.75rem', 
+                        padding: '1.75rem 1.5rem', 
+                        textAlign: 'center', 
+                        background: '#faf5ff',
+                        cursor: isProcessingFile ? 'wait' : 'pointer',
+                        transition: 'all 0.2s ease',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.5rem'
+                      }}
+                    >
+                      {isProcessingFile ? (
+                        <>
+                          <Loader2 size={36} color="#7c3aed" style={{ animation: 'spin 1s linear infinite' }} />
+                          <div style={{ fontWeight: 700, fontSize: '0.95rem', color: '#6b21a8' }}>
+                            Extracting text and detecting chapters from document...
+                          </div>
+                          <span style={{ fontSize: '0.75rem', color: '#9333ea' }}>
+                            Parsing PDF / Word structure, reading syllabus modules and exercises
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#ede9fe', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '0.25rem' }}>
+                            <UploadCloud size={24} color="#7c3aed" />
+                          </div>
+                          <div style={{ fontWeight: 800, fontSize: '1rem', color: '#0f172a' }}>
+                            Click to upload or drag & drop your PDF or Word document
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.25rem' }}>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '4px', background: '#fee2e2', color: '#b91c1c' }}>📄 PDF</span>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '4px', background: '#dbeafe', color: '#1d4ed8' }}>📝 Word (.docx)</span>
+                            <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '0.15rem 0.5rem', borderRadius: '4px', background: '#f1f5f9', color: '#475569' }}>📋 Plain Text (.txt)</span>
+                          </div>
+                          <span style={{ fontSize: '0.725rem', color: '#64748b', marginTop: '0.25rem' }}>
+                            AI automatically extracts book chapters, syllabus topics, and sample excerpts for instant question generation
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    {fileUploadError && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', color: '#b91c1c', fontSize: '0.8rem' }}>
+                        <AlertCircle size={16} />
+                        <span>{fileUploadError}</span>
+                      </div>
+                    )}
+
+                    {/* Active Uploaded Document Banner */}
+                    {uploadedDocMeta && (
+                      <div style={{ background: '#f0fdf4', border: '1.5px solid #86efac', borderRadius: '0.625rem', padding: '0.875rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <div style={{ width: '36px', height: '36px', borderRadius: '0.5rem', background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#16a34a' }}>
+                            <FileText size={20} />
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#166534' }}>
+                              ✅ Loaded: {uploadedDocMeta.title}
+                            </div>
+                            <div style={{ fontSize: '0.725rem', color: '#15803d', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <span>Format: {uploadedDocMeta.fileType.toUpperCase()}</span>
+                              <span>•</span>
+                              <span>{uploadedDocMeta.fileSize || `${uploadedDocMeta.totalWords} words`}</span>
+                              <span>•</span>
+                              <span style={{ fontWeight: 700 }}>{uploadedDocMeta.chapters.length} Chapters Extracted</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => setShowExtractedPreview(!showExtractedPreview)}
+                            className="btn-secondary btn-sm"
+                            style={{ fontSize: '0.725rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#ffffff' }}
+                          >
+                            <Eye size={13} /> {showExtractedPreview ? 'Hide Preview' : 'Preview Extracted Text'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="btn-secondary btn-sm"
+                            style={{ fontSize: '0.725rem', background: '#ffffff' }}
+                          >
+                            Upload Another
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* MODE 2: PASTE BOOK COPY / SYLLABUS TEXT */}
+                {docUploadMode === 'paste' && (
+                  <div style={{ background: '#faf5ff', border: '1.5px solid #e9d5ff', borderRadius: '0.75rem', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#6b21a8', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <Copy size={16} /> Paste Textbook Excerpt, Chapter Notes, or Syllabus Copy
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label className="form-label" style={{ fontSize: '0.75rem', margin: 0, marginBottom: '0.25rem' }}>Book / Syllabus Title</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Modern Physics - Motion & Gravitation"
+                          value={pastedTitle}
+                          onChange={e => setPastedTitle(e.target.value)}
+                          className="form-input"
+                          style={{ fontSize: '0.8125rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label className="form-label" style={{ fontSize: '0.75rem', margin: 0, marginBottom: '0.25rem' }}>Author / Board (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Cambridge Curriculum Board"
+                          value={pastedAuthor}
+                          onChange={e => setPastedAuthor(e.target.value)}
+                          className="form-input"
+                          style={{ fontSize: '0.8125rem' }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="form-label" style={{ fontSize: '0.75rem', margin: 0, marginBottom: '0.25rem' }}>Pasted Text Content</label>
+                      <textarea
+                        rows={5}
+                        placeholder="Paste your syllabus text, textbook copy, chapter paragraphs, or study material here... Our engine will automatically segment headings, definitions, and formulas into chapters."
+                        value={pastedText}
+                        onChange={e => setPastedText(e.target.value)}
+                        className="form-textarea"
+                        style={{ fontSize: '0.8125rem', lineHeight: 1.45 }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.25rem' }}>
+                      <button
+                        type="button"
+                        onClick={handleProcessPastedCopy}
+                        disabled={!pastedText.trim() || isProcessingFile}
+                        className="btn-primary btn-sm"
+                        style={{
+                          background: '#7c3aed',
+                          borderColor: '#7c3aed',
+                          padding: '0.5rem 1rem',
+                          fontWeight: 700,
+                          fontSize: '0.775rem',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.35rem'
+                        }}
+                      >
+                        <Sparkles size={14} /> Process & Segment Into Chapters
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* MODE 3: PRELOADED LIBRARY BOOKS */}
+                {docUploadMode === 'library' && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
+                      <label className="form-label" style={{ margin: 0 }}>Select Digital Textbook / Syllabus Source</label>
+                      <button 
+                        type="button" 
+                        onClick={() => setShowInlineAddBook(!showInlineAddBook)}
+                        style={{ background: 'none', border: 'none', color: '#7c3aed', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                      >
+                        <Plus size={12} /> {showInlineAddBook ? 'Cancel' : '+ Add / Upload Book'}
+                      </button>
+                    </div>
+                    <select 
+                      value={selectedBookId} 
+                      onChange={(e) => {
+                        if (e.target.value === '__add_new__') {
+                          setShowInlineAddBook(true);
+                        } else {
+                          setSelectedBookId(e.target.value);
+                          setShowInlineAddBook(false);
+                        }
+                      }}
+                      className="form-select"
+                    >
+                      {books.map(b => (
+                        <option key={b.id} value={b.id}>{b.title} ({b.author})</option>
+                      ))}
+                      <option value="__add_new__" style={{ fontWeight: 700, color: '#7c3aed' }}>➕ + Add / Upload New Book Resource (New Field)...</option>
+                    </select>
+
+                    {/* Inline Add Book Panel */}
+                    {showInlineAddBook && (
+                      <div style={{ background: '#faf5ff', border: '1.5px dashed #c084fc', borderRadius: '0.625rem', padding: '1rem', marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#6b21a8' }}>
+                          📖 Add Digital Textbook / Reference Source
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 0.8fr', gap: '0.5rem' }}>
+                          <input 
+                            type="text" 
+                            placeholder="Book Title (e.g. Modern Physics Concepts)" 
+                            value={newBookTitle} 
+                            onChange={e => setNewBookTitle(e.target.value)}
+                            className="form-input"
+                            style={{ fontSize: '0.8125rem' }}
+                          />
+                          <input 
+                            type="text" 
+                            placeholder="Author (e.g. Cambridge Board)" 
+                            value={newBookAuthor} 
+                            onChange={e => setNewBookAuthor(e.target.value)}
+                            className="form-input"
+                            style={{ fontSize: '0.8125rem' }}
+                          />
+                          <input 
+                            type="text" 
+                            placeholder="Grade (e.g. Grade 10)" 
+                            value={newBookGrade} 
+                            onChange={e => setNewBookGrade(e.target.value)}
+                            className="form-input"
+                            style={{ fontSize: '0.8125rem' }}
+                          />
+                        </div>
+                        <input 
+                          type="text" 
+                          placeholder="Initial Chapter Title (e.g. Ch 1: Motion & Gravitation)" 
+                          value={newBookInitialChapterTitle} 
+                          onChange={e => setNewBookInitialChapterTitle(e.target.value)}
+                          className="form-input"
+                          style={{ fontSize: '0.8125rem' }}
+                        />
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                          <button type="button" onClick={() => setShowInlineAddBook(false)} className="btn-secondary btn-sm" style={{ fontSize: '0.7rem' }}>
+                            Cancel
+                          </button>
+                          <button type="button" onClick={() => handleSaveNewBook()} className="btn-primary btn-sm" style={{ background: '#7c3aed', borderColor: '#7c3aed', fontSize: '0.7rem' }}>
+                            <CheckCircle2 size={13} /> Save & Select Book
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Extracted Text Preview Drawer */}
+                {showExtractedPreview && uploadedDocMeta && (
+                  <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '0.625rem', padding: '1rem', maxHeight: '240px', overflowY: 'auto' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#334155' }}>
+                        Document Excerpt Preview ({uploadedDocMeta.rawText.length.toLocaleString()} characters)
+                      </span>
+                      <button type="button" onClick={() => setShowExtractedPreview(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <pre style={{ fontSize: '0.75rem', color: '#475569', whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: 0 }}>
+                      {uploadedDocMeta.rawText.slice(0, 1500)}...
+                    </pre>
+                  </div>
+                )}
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
-                    <label className="form-label" style={{ margin: 0 }}>Select Chapters to Include (Multi-chapter selection supported)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <label className="form-label" style={{ margin: 0 }}>Select Chapters to Include (Multi-chapter selection supported)</label>
+                      <span style={{ 
+                        fontSize: '0.7rem', 
+                        color: selectedChapterNumbers.length > 0 ? '#166534' : '#991b1b', 
+                        background: selectedChapterNumbers.length > 0 ? '#dcfce7' : '#fee2e2', 
+                        padding: '0.15rem 0.5rem', 
+                        borderRadius: '1rem', 
+                        fontWeight: 600 
+                      }}>
+                        {selectedChapterNumbers.length > 0 
+                          ? `✓ ${selectedChapterNumbers.length} Chapter${selectedChapterNumbers.length > 1 ? 's' : ''} Selected` 
+                          : '⚠️ Select at least 1 chapter'}
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => {
@@ -1308,20 +2171,139 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                             background: isSelected ? '#faf5ff' : '#ffffff', 
                             border: `1.5px solid ${isSelected ? '#7c3aed' : '#e2e8f0'}`,
                             cursor: 'pointer',
-                            fontSize: '0.8125rem'
+                            fontSize: '0.8125rem',
+                            transition: 'all 0.15s ease'
                           }}
                         >
-                          <div style={{ fontWeight: 700, color: '#0f172a' }}>Ch {ch.chapterNumber}: {ch.title}</div>
-                          <div style={{ fontSize: '0.7rem', color: '#64748b' }}>{ch.pageRange}</div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ fontWeight: 700, color: isSelected ? '#6d28d9' : '#0f172a' }}>
+                              Ch {ch.chapterNumber}: {ch.title}
+                            </div>
+                            {isSelected && (
+                              <span style={{ fontSize: '0.7rem', color: '#7c3aed', fontWeight: 700 }}>✓ Selected</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.15rem' }}>{ch.pageRange}</div>
                         </div>
                       );
                     })}
                   </div>
                 </div>
 
+                {/* Groq AI Cloud Generator Bar */}
+                <div style={{ background: '#f5f3ff', border: '1.5px solid #ddd6fe', borderRadius: '0.625rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ background: '#7c3aed', padding: '0.4rem', borderRadius: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Zap size={16} color="#ffffff" />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#5b21b6', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        Groq AI Cloud Generator
+                        <span style={{ fontSize: '0.65rem', background: '#e9d5ff', color: '#6d28d9', padding: '0.1rem 0.4rem', borderRadius: '0.25rem', fontWeight: 700 }}>
+                          {groqModel}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.7rem', color: '#6d28d9' }}>
+                        Sends extracted PDF/Word text directly to Groq LLM for real questions
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, color: '#4c1d95' }}>
+                      <input 
+                        type="checkbox" 
+                        checked={useGroqAi} 
+                        onChange={e => setUseGroqAi(e.target.checked)}
+                        style={{ cursor: 'pointer', accentColor: '#7c3aed' }} 
+                      />
+                      Use Groq AI
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowGroqConfigModal(!showGroqConfigModal)}
+                      className="btn-secondary btn-sm"
+                      style={{ fontSize: '0.725rem', padding: '0.35rem 0.65rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', background: '#ffffff' }}
+                    >
+                      <Key size={12} color="#7c3aed" />
+                      {GroqStorage.hasApiKey() || groqApiKeyInput.trim() ? 'Groq Key ✓' : 'Set Groq Key 🔑'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Groq Key Drawer */}
+                {showGroqConfigModal && (
+                  <div style={{ background: '#ffffff', border: '1.5px solid #c4b5fd', borderRadius: '0.625rem', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 700, color: '#4c1d95', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        <Zap size={14} color="#7c3aed" /> Groq AI API Configuration
+                      </span>
+                      <button type="button" onClick={() => setShowGroqConfigModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}>
+                        <X size={14} />
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.75rem' }}>
+                      <div>
+                        <label className="form-label" style={{ fontSize: '0.75rem', margin: 0, marginBottom: '0.25rem' }}>
+                          Groq API Key (starts with gsk_...)
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="gsk_..."
+                          value={groqApiKeyInput}
+                          onChange={e => setGroqApiKeyInput(e.target.value)}
+                          className="form-input"
+                          style={{ fontSize: '0.8125rem' }}
+                        />
+                      </div>
+                      <div>
+                        <label className="form-label" style={{ fontSize: '0.75rem', margin: 0, marginBottom: '0.25rem' }}>
+                          LLM Model
+                        </label>
+                        <select
+                          value={groqModel}
+                          onChange={e => setGroqModel(e.target.value)}
+                          className="form-select"
+                          style={{ fontSize: '0.8125rem' }}
+                        >
+                          <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Recommended)</option>
+                          <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fastest)</option>
+                          <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.25rem' }}>
+                      <a 
+                        href="https://console.groq.com/keys" 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        style={{ fontSize: '0.75rem', color: '#7c3aed', textDecoration: 'underline' }}
+                      >
+                        Get a free Groq API key at console.groq.com ↗
+                      </a>
+                      <button
+                        type="button"
+                        onClick={handleSaveGroqConfig}
+                        className="btn-primary btn-sm"
+                        style={{ background: '#7c3aed', borderColor: '#7c3aed', fontSize: '0.75rem' }}
+                      >
+                        <CheckCircle2 size={13} /> Save Groq Settings & Sync Backend
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div>
-                  <label className="form-label">Configure Question Distribution by Marks (7.4.2)</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginTop: '0.35rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                    <label className="form-label" style={{ margin: 0 }}>Configure Question Distribution by Marks (7.4.2)</label>
+                    <span className="badge badge-purple" style={{ fontSize: '0.75rem' }}>
+                      {dist1m + dist2m + dist3m + dist4m + dist5m + dist10m} Questions ({dist1m * 1 + dist2m * 2 + dist3m * 3 + dist4m * 4 + dist5m * 5 + dist10m * 10} Marks)
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.75rem', marginTop: '0.35rem' }}>
                     <div style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                       <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>1-Mark Qs</span>
                       <input 
@@ -1340,6 +2322,28 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                         min={0} 
                         value={dist2m} 
                         onChange={(e) => setDist2m(Number(e.target.value))} 
+                        className="form-input" 
+                        style={{ marginTop: '0.35rem' }} 
+                      />
+                    </div>
+                    <div style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>3-Mark Qs</span>
+                      <input 
+                        type="number" 
+                        min={0} 
+                        value={dist3m} 
+                        onChange={(e) => setDist3m(Number(e.target.value))} 
+                        className="form-input" 
+                        style={{ marginTop: '0.35rem' }} 
+                      />
+                    </div>
+                    <div style={{ background: '#f8fafc', padding: '0.75rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>4-Mark Qs</span>
+                      <input 
+                        type="number" 
+                        min={0} 
+                        value={dist4m} 
+                        onChange={(e) => setDist4m(Number(e.target.value))} 
                         className="form-input" 
                         style={{ marginTop: '0.35rem' }} 
                       />
@@ -1369,15 +2373,89 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                   </div>
                 </div>
 
-                <button 
-                  onClick={handleTriggerBookGeneration} 
-                  disabled={isBookGenerating || selectedChapterNumbers.length === 0} 
-                  className="btn-primary"
-                  style={{ alignSelf: 'flex-start', background: '#7c3aed', borderColor: '#7c3aed' }}
-                >
-                  <BookOpen size={16} />
-                  {isBookGenerating ? 'Extracting & Generating...' : `Generate ${dist1m + dist2m + dist5m + dist10m} Questions from Book`}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <button 
+                    type="button"
+                    onClick={handleTriggerBookGeneration} 
+                    disabled={isBookGenerating || !uploadedDocMeta || (dist1m + dist2m + dist3m + dist4m + dist5m + dist10m) === 0} 
+                    className="btn-primary"
+                    style={{ 
+                      alignSelf: 'flex-start', 
+                      background: '#7c3aed', 
+                      borderColor: '#7c3aed',
+                      opacity: (isBookGenerating || !uploadedDocMeta || (dist1m + dist2m + dist3m + dist4m + dist5m + dist10m) === 0) ? 0.5 : 1,
+                      cursor: (isBookGenerating || !uploadedDocMeta || (dist1m + dist2m + dist3m + dist4m + dist5m + dist10m) === 0) ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {isBookGenerating ? <Loader2 size={16} className="animate-spin" /> : useGroqAi ? <Zap size={16} /> : <BookOpen size={16} />}
+                    {isBookGenerating 
+                      ? (useGroqAi ? 'Groq AI Generating Questions...' : 'Extracting & Generating...') 
+                      : !uploadedDocMeta
+                        ? 'Upload Document to Generate'
+                        : `Generate ${dist1m + dist2m + dist3m + dist4m + dist5m + dist10m} Questions ${useGroqAi ? 'with Groq AI ⚡' : 'from Document'} (${selectedChapterNumbers.length === 0 ? 'All Chapters' : selectedChapterNumbers.length === 1 ? `Ch ${selectedChapterNumbers[0]}` : `${selectedChapterNumbers.length} Chapters`})`}
+                  </button>
+
+                  {candidateBookQuestions.length > 0 && (
+                    <span style={{ fontSize: '0.8125rem', color: '#059669', fontWeight: 600 }}>
+                      ✓ {candidateBookQuestions.length} Questions from {uploadedDocMeta?.title || 'Document'} in Manifest
+                    </span>
+                  )}
+                </div>
+
+                {/* Error Banner */}
+                {bookGenError && (
+                  <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#991b1b', fontSize: '0.8125rem' }}>
+                    <AlertCircle size={16} />
+                    <span>{bookGenError}</span>
+                  </div>
+                )}
+
+                {/* Success Banner */}
+                {bookGenSuccess && (
+                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#166534', fontSize: '0.8125rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <CheckCircle2 size={16} />
+                      <span style={{ fontWeight: 600 }}>{bookGenSuccess}</span>
+                    </div>
+                    <span style={{ background: '#dcfce7', padding: '0.2rem 0.6rem', borderRadius: '1rem', fontWeight: 700, fontSize: '0.75rem' }}>
+                      Manifest Total: {questions.length} Qs ({totalCalculatedMarks} Marks)
+                    </span>
+                  </div>
+                )}
+
+                {/* Live Candidate Preview Shelf */}
+                {candidateBookQuestions.length > 0 && (
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.625rem', padding: '1rem', marginTop: '0.25rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                      <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#334155' }}>
+                        Preview of Questions Generated & Added to Manifest ({candidateBookQuestions.length})
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: '#059669', fontWeight: 600 }}>
+                        All Active in Right Manifest Panel
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.625rem', maxHeight: '320px', overflowY: 'auto' }}>
+                      {candidateBookQuestions.map((q, idx) => (
+                        <div key={q.id || idx} style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '0.5rem', padding: '0.75rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <span className="badge badge-purple" style={{ fontSize: '0.7rem' }}>{q.marks} Marks</span>
+                              <span className="badge badge-gray" style={{ fontSize: '0.7rem' }}>{q.type.replace('_', ' ').toUpperCase()}</span>
+                              <span style={{ fontSize: '0.7rem', color: '#64748b' }}>Ch {q.chapterNumber || 1}</span>
+                            </div>
+                            <span style={{ fontSize: '0.7rem', color: '#059669', fontWeight: 600 }}>✓ In Manifest</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '0.8125rem', color: '#0f172a', lineHeight: 1.4 }}>{q.text}</p>
+                          {q.explanation && (
+                            <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: '#64748b', fontStyle: 'italic' }}>
+                              {q.explanation}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

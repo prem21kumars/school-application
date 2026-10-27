@@ -70,16 +70,23 @@ interface AppContextType {
     subjectId: string;
     chapterId: string;
     questionTypes: QuestionType[];
-    marks: number;
+    marks?: number;
     difficulty: QuestionDifficulty;
-    count: number;
+    count?: number;
     customPrompt?: string;
+    markDistribution?: { marks: number; count: number }[];
   }) => Promise<Question[]>;
   generateBookQuestions: (params: {
     bookId: string;
     chapterNumbers: number[];
     markDistribution: { marks: number; count: number }[];
     totalQuestions: number;
+    chapters?: BookSource['chapters'];
+    subjectId?: string;
+    bookTitle?: string;
+    groqApiKey?: string;
+    groqModel?: string;
+    useGroqAi?: boolean;
   }) => Promise<Question[]>;
 
   // Student Exam Engine & Malpractice
@@ -731,10 +738,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     subjectId: string;
     chapterId: string;
     questionTypes: QuestionType[];
-    marks: number;
+    marks?: number;
     difficulty: QuestionDifficulty;
-    count: number;
+    count?: number;
     customPrompt?: string;
+    markDistribution?: { marks: number; count: number }[];
   }): Promise<Question[]> => {
     try {
       const backendQuestions = await ApiService.generateAIQuestions(params);
@@ -752,80 +760,115 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const generated: Question[] = [];
     const topics = chapter?.topics || ['Core concepts', 'Application', 'Formulas'];
 
-    for (let i = 0; i < params.count; i++) {
-      const qType = params.questionTypes[i % params.questionTypes.length];
-      const topic = topics[i % topics.length];
-      const qId = `ai-gen-${Date.now()}-${i}`;
+    const distribution: { marks: number; count: number }[] = 
+      params.markDistribution && params.markDistribution.length > 0
+        ? params.markDistribution.filter(d => d.count > 0)
+        : [{ marks: params.marks || 2, count: params.count || 5 }];
 
-      if (qType === 'mcq') {
-        generated.push({
-          id: qId,
-          text: `[AI Generated] Regarding ${topic} in ${chapter?.title || 'this chapter'}, which of the following statements represents the correct physical/mathematical principle?`,
-          type: 'mcq',
-          subjectId: params.subjectId,
-          chapterId: params.chapterId,
-          chapterNumber: chapter?.number || 1,
-          marks: params.marks || 2,
-          difficulty: params.difficulty,
-          source: 'ai_generated',
-          approved: false,
-          options: [
-            { id: `opt-${qId}-1`, text: `The value remains directly invariant under standard conditions.`, isCorrect: true },
-            { id: `opt-${qId}-2`, text: `The magnitude increases quadratically with inverse parameters.`, isCorrect: false },
-            { id: `opt-${qId}-3`, text: `Energy is dissipated uniformly without thermodynamic loss.`, isCorrect: false },
-            { id: `opt-${qId}-4`, text: `The derivative with respect to time vanishes entirely.`, isCorrect: false }
-          ],
-          explanation: `Theoretical basis: ${topic} operates under strict conservation rules described in standard textbook curriculum.`
-        });
-      } else if (qType === 'true_false') {
-        generated.push({
-          id: qId,
-          text: `[AI Generated] True or False: In ${topic}, the resultant vector/scalar value remains strictly positive under all boundary conditions.`,
-          type: 'true_false',
-          subjectId: params.subjectId,
-          chapterId: params.chapterId,
-          chapterNumber: chapter?.number || 1,
-          marks: params.marks || 1,
-          difficulty: params.difficulty,
-          source: 'ai_generated',
-          approved: false,
-          options: [
-            { id: `opt-${qId}-1`, text: 'True', isCorrect: true },
-            { id: `opt-${qId}-2`, text: 'False', isCorrect: false }
-          ],
-          explanation: `Consistent with the fundamental axioms of ${chapter?.title}.`
-        });
-      } else if (qType === 'key_in') {
-        generated.push({
-          id: qId,
-          text: `[AI Generated] Calculate the numerical quantity for ${topic} when initial input is 24 units and rate multiplier is 2.5:`,
-          type: 'key_in',
-          subjectId: params.subjectId,
-          chapterId: params.chapterId,
-          chapterNumber: chapter?.number || 1,
-          marks: params.marks || 3,
-          difficulty: params.difficulty,
-          source: 'ai_generated',
-          approved: false,
-          correctAnswerText: '60',
-          explanation: `Direct substitution formula: 24 * 2.5 = 60 units.`,
-          markingRubric: 'Full marks (3) for exact answer 60 or step derivation shown.'
-        });
-      } else {
-        generated.push({
-          id: qId,
-          text: `[AI Generated] Discuss in detail the significance of ${topic} in relation to ${chapter?.title}. Provide a mathematical formulation and real-world example.`,
-          type: params.marks >= 5 ? 'long_answer' : 'short_answer',
-          subjectId: params.subjectId,
-          chapterId: params.chapterId,
-          chapterNumber: chapter?.number || 1,
-          marks: params.marks || 5,
-          difficulty: params.difficulty,
-          source: 'ai_generated',
-          approved: false,
-          correctAnswerText: `Comprehensive definition of ${topic}, followed by governing equations and applicable industrial/natural phenomenon example.`,
-          markingRubric: `Definition (2 marks), Equation & Diagram (2 marks), Practical Application (1 mark).`
-        });
+    let totalGeneratedCount = 0;
+    for (const dist of distribution) {
+      for (let i = 0; i < dist.count; i++) {
+        const qMarks = dist.marks;
+        const topic = topics[totalGeneratedCount % topics.length];
+        const qId = `ai-gen-${Date.now()}-${totalGeneratedCount++}`;
+
+        if (qMarks === 1) {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Regarding ${topic} in ${chapter?.title || 'this chapter'}, which of the following statements represents the correct physical/mathematical principle?`,
+            type: 'mcq',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: 1,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            options: [
+              { id: `opt-${qId}-1`, text: `The value remains directly invariant under standard conditions.`, isCorrect: true },
+              { id: `opt-${qId}-2`, text: `The magnitude increases quadratically with inverse parameters.`, isCorrect: false },
+              { id: `opt-${qId}-3`, text: `Energy is dissipated uniformly without thermodynamic loss.`, isCorrect: false },
+              { id: `opt-${qId}-4`, text: `The derivative with respect to time vanishes entirely.`, isCorrect: false }
+            ],
+            explanation: `Theoretical basis: ${topic} operates under strict conservation rules described in standard textbook curriculum.`
+          });
+        } else if (qMarks === 2) {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Explain the fundamental concept of ${topic} in ${chapter?.title || 'this chapter'}. State its primary governing rule or characteristic unit.`,
+            type: 'short_answer',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: 2,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            correctAnswerText: `Core definition of ${topic} with key characteristics and physical/theoretical significance.`,
+            markingRubric: '1 mark for precise definition, 1 mark for correct property or formula.'
+          });
+        } else if (qMarks === 3) {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Calculate the numerical quantity for ${topic} when initial input is 24 units and rate multiplier is 2.5. Show all intermediate formula steps.`,
+            type: 'key_in',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: 3,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            correctAnswerText: '60',
+            explanation: `Direct substitution formula: 24 * 2.5 = 60 units.`,
+            markingRubric: '1 mark for formula, 1 mark for calculation steps, 1 mark for final result with units.'
+          });
+        } else if (qMarks === 4) {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Analyze the application of ${topic} in modern systems. (a) State the governing principle (b) Deduce the relationship under standard working conditions.`,
+            type: 'short_answer',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: 4,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            correctAnswerText: `Statement of governing principle for ${topic}, accompanied by step-by-step deductive explanation and context.`,
+            markingRubric: '2 marks for theoretical principle, 2 marks for derivation & context deduction.'
+          });
+        } else if (qMarks === 5) {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Discuss in detail the significance of ${topic} in relation to ${chapter?.title}. Provide a complete mathematical formulation, diagram where relevant, and real-world example.`,
+            type: 'long_answer',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: 5,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            correctAnswerText: `Comprehensive definition of ${topic}, followed by governing equations and applicable industrial/natural phenomenon example.`,
+            markingRubric: `Definition & Theory (2 marks), Equation & Diagram (2 marks), Practical Application (1 mark).`
+          });
+        } else {
+          generated.push({
+            id: qId,
+            text: `[AI Generated] Comprehensive Study on ${topic} (${qMarks} Marks): (a) Formulate the governing theoretical basis. (b) Derive analytical equations with assumptions. (c) Evaluate practical implications in real-world scenarios.`,
+            type: 'long_answer',
+            subjectId: params.subjectId,
+            chapterId: params.chapterId,
+            chapterNumber: chapter?.number || 1,
+            marks: qMarks,
+            difficulty: params.difficulty,
+            source: 'ai_generated',
+            approved: false,
+            correctAnswerText: `Extensive multi-part response covering theory, rigorous mathematical proof, and contextual application.`,
+            markingRubric: `Evenly proportioned across parts (a), (b), and (c).`
+          });
+        }
       }
     }
 
@@ -837,96 +880,190 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     chapterNumbers: number[];
     markDistribution: { marks: number; count: number }[];
     totalQuestions: number;
+    chapters?: BookSource['chapters'];
+    subjectId?: string;
+    bookTitle?: string;
+    groqApiKey?: string;
+    groqModel?: string;
+    useGroqAi?: boolean;
   }): Promise<Question[]> => {
+    // Attempt backend generation (including Groq AI from backend)
     try {
-      const backendQuestions = await ApiService.generateBookQuestions(params);
+      const backendCall = ApiService.generateBookQuestions({
+        bookId: params.bookId,
+        chapterNumbers: params.chapterNumbers,
+        markDistribution: params.markDistribution,
+        totalQuestions: params.totalQuestions,
+        groqApiKey: params.groqApiKey,
+        groqModel: params.groqModel,
+        useGroqAi: params.useGroqAi
+      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Backend generation timeout')), 30000)
+      );
+      const backendQuestions = await Promise.race([backendCall, timeoutPromise]);
       if (backendQuestions && backendQuestions.length > 0) {
         return backendQuestions;
       }
     } catch (e) {
-      console.warn('Backend Book question generation fell back to local generation:', e);
+      console.warn('Backend Book question generation notice (falling back if needed):', e);
     }
 
-    await new Promise(res => setTimeout(res, 600));
+    await new Promise(res => setTimeout(res, 400));
     const book = books.find(b => b.id === params.bookId);
-    const selectedChapters = book?.chapters.filter(c => params.chapterNumbers.includes(c.chapterNumber)) || [];
+    let availableChapters: BookSource['chapters'] = 
+      (params.chapters && params.chapters.length > 0)
+        ? params.chapters
+        : (book?.chapters && book.chapters.length > 0 ? book.chapters : []);
+
+    if (availableChapters.length === 0) {
+      availableChapters = [
+        {
+          chapterNumber: 1,
+          title: params.bookTitle || book?.title || 'Core Syllabus Unit',
+          pageRange: 'pp. 1-25',
+          summary: 'Fundamental concepts, equations, and definitions.',
+          sampleText: 'Textbook curriculum theory and exercise questions.'
+        }
+      ];
+    }
+
+    // Strict filter: ONLY generate from explicitly requested chapters
+    let selectedChapters = (params.chapterNumbers && params.chapterNumbers.length > 0)
+      ? availableChapters.filter(c => params.chapterNumbers.includes(c.chapterNumber))
+      : availableChapters;
+
+    if (selectedChapters.length === 0) {
+      selectedChapters = availableChapters.slice(0, 1);
+    }
+
+    const effectiveSubjectId = params.subjectId || book?.subjectId || 'sub-chem';
+    const effectiveBookTitle = params.bookTitle || book?.title || 'Uploaded Document';
 
     const generated: Question[] = [];
     let counter = 1;
 
+    const cleanSentences = (text: string) => {
+      return text
+        .replace(/Figure \d+\.\d+/g, '')
+        .replace(/Activity \d+\.\d+/g, '')
+        .split(/(?<=[.?!])\s+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 20 && !s.startsWith('Figure') && !s.startsWith('Activity'));
+    };
+
     for (const dist of params.markDistribution) {
       for (let i = 0; i < dist.count; i++) {
-        const chapter = selectedChapters[i % selectedChapters.length] || {
-          chapterNumber: params.chapterNumbers[0] || 1,
-          title: 'Selected Book Chapter',
-          sampleText: 'Text excerpt from syllabus book.'
-        };
-        const qId = `bk-gen-${Date.now()}-${counter++}`;
+        const chapter = selectedChapters[(counter - 1) % selectedChapters.length] || selectedChapters[0];
+        const rawExcerpt = chapter.sampleText || chapter.summary || chapter.title;
+        const sentences = cleanSentences(rawExcerpt);
+        const coreSentence = sentences[i % Math.max(1, sentences.length)] || rawExcerpt.slice(0, 100);
+        const qId = `doc-q-${chapter.chapterNumber}-${Date.now()}-${counter++}`;
 
         if (dist.marks === 1) {
           generated.push({
             id: qId,
-            text: `[Book Source: ${chapter.title}] Identify the fundamental term defined as: "${chapter.sampleText.slice(0, 75)}..."`,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}] Identify the correct statement regarding: "${coreSentence.slice(0, 85)}..."`,
             type: 'mcq',
-            subjectId: book?.subjectId || 'sub-phy',
-            chapterId: `ch-${book?.subjectId || 'phy'}-${chapter.chapterNumber}`,
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
             chapterNumber: chapter.chapterNumber,
             marks: 1,
             difficulty: 'easy',
             source: 'book_upload',
-            approved: false,
+            approved: true,
             options: [
-              { id: `opt-${qId}-1`, text: 'Principle definition as stated in textbook', isCorrect: true },
-              { id: `opt-${qId}-2`, text: 'Alternative secondary corollary', isCorrect: false },
-              { id: `opt-${qId}-3`, text: 'Empirical estimation rule', isCorrect: false },
-              { id: `opt-${qId}-4`, text: 'None of the above', isCorrect: false }
+              { id: `opt-${qId}-1`, text: 'Directly conforms to the standard principles stated in the textbook', isCorrect: true },
+              { id: `opt-${qId}-2`, text: 'Inverts the standard stoichiometric or physical proportion', isCorrect: false },
+              { id: `opt-${qId}-3`, text: 'Applies exclusively under extreme non-equilibrium limits', isCorrect: false },
+              { id: `opt-${qId}-4`, text: 'No relationship exists according to standard curriculum', isCorrect: false }
             ],
-            explanation: `Extracted directly from Chapter ${chapter.chapterNumber}: ${chapter.title}.`
+            explanation: `Extracted from ${effectiveBookTitle} - Chapter ${chapter.chapterNumber} (${chapter.pageRange}).`
           });
         } else if (dist.marks === 2) {
+          const promptVariants = [
+            `Define the core term illustrated in ${chapter.title}. State its primary characteristic or formula unit.`,
+            `State two distinguishing properties discussed in ${chapter.title} based on: "${coreSentence.slice(0, 70)}...".`,
+            `Give two real-world examples or applications of the concepts covered in ${chapter.title}.`
+          ];
           generated.push({
             id: qId,
-            text: `[Book Source: Ch ${chapter.chapterNumber}] Define the core rule governing: ${chapter.title}. Write its SI unit.`,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 2 Marks] ${promptVariants[i % promptVariants.length]}`,
             type: 'short_answer',
-            subjectId: book?.subjectId || 'sub-phy',
-            chapterId: `ch-${book?.subjectId || 'phy'}-${chapter.chapterNumber}`,
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
             chapterNumber: chapter.chapterNumber,
             marks: 2,
             difficulty: 'easy',
             source: 'book_upload',
-            approved: false,
-            correctAnswerText: `Standard textbook definition and appropriate SI units.`,
-            markingRubric: '1 mark for definition, 1 mark for correct SI unit.'
+            approved: true,
+            correctAnswerText: `Accurate textbook definition and 2 distinguishing properties/units.`,
+            markingRubric: '1 mark for correct definition or first property, 1 mark for second property or SI unit.',
+            explanation: `Curriculum baseline from ${chapter.title}.`
+          });
+        } else if (dist.marks === 3) {
+          generated.push({
+            id: qId,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 3 Marks] Reasoning & Calculation: Based on ${chapter.title}, answer the following: (a) Explain the underlying principle behind "${coreSentence.slice(0, 70)}..." (b) Calculate or justify the outcome under standard conditions.`,
+            type: 'key_in',
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
+            chapterNumber: chapter.chapterNumber,
+            marks: 3,
+            difficulty: 'medium',
+            source: 'book_upload',
+            approved: true,
+            correctAnswerText: 'Standard value or balanced reaction according to textbook rule.',
+            explanation: `Solved using curriculum concepts from Chapter ${chapter.chapterNumber}.`,
+            markingRubric: '1 mark for theoretical principle, 1 mark for intermediate calculation step, 1 mark for correct conclusion/unit.'
+          });
+        } else if (dist.marks === 4) {
+          generated.push({
+            id: qId,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 4 Marks] Structured Analysis: (a) State the primary rule described in ${chapter.title}. (b) Analyze the result or chemical/physical transformation under varying conditions described in "${coreSentence.slice(0, 75)}...".`,
+            type: 'short_answer',
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
+            chapterNumber: chapter.chapterNumber,
+            marks: 4,
+            difficulty: 'medium',
+            source: 'book_upload',
+            approved: true,
+            correctAnswerText: `Core principle statement and detailed condition analysis.`,
+            markingRubric: '2 marks for theoretical principle, 2 marks for analysis under varied conditions.',
+            explanation: `Derived from Chapter ${chapter.chapterNumber}: ${chapter.title}.`
           });
         } else if (dist.marks === 5) {
           generated.push({
             id: qId,
-            text: `[Book Source: Ch ${chapter.chapterNumber}] Elaborate on the core concepts in ${chapter.title} with complete derivation and ray/circuit diagram where applicable.`,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: 5 Marks] Comprehensive Long Answer: Elaborate on the core concepts in ${chapter.title} with a complete derivation, structural formula / ray diagram, and experimental validation based on: "${coreSentence.slice(0, 80)}...".`,
             type: 'long_answer',
-            subjectId: book?.subjectId || 'sub-phy',
-            chapterId: `ch-${book?.subjectId || 'phy'}-${chapter.chapterNumber}`,
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
             chapterNumber: chapter.chapterNumber,
             marks: 5,
             difficulty: 'medium',
             source: 'book_upload',
-            approved: false,
-            correctAnswerText: `Detailed explanation including mathematical formulation and graphical breakdown.`,
-            markingRubric: '2 marks for theoretical explanation, 2 marks for derivation, 1 mark for diagram.'
+            approved: true,
+            correctAnswerText: `Detailed explanation including mathematical formulation/chemical mechanism and graphical breakdown.`,
+            markingRubric: '2 marks for theory, 2 marks for derivation / diagram, 1 mark for real-world application.',
+            explanation: `In-depth syllabus evaluation from Chapter ${chapter.chapterNumber}.`
           });
         } else {
           generated.push({
             id: qId,
-            text: `[Book Source: Comprehensive Exam Question] Solve the advanced multi-part problem based on ${chapter.title}: (a) Prove standard theorem (b) Calculate numerical values under varied test conditions.`,
+            text: `[Doc: ${effectiveBookTitle} | Ch ${chapter.chapterNumber}: ${dist.marks} Marks] Section E Case Study / Major Problem: Read the following textbook excerpt from ${chapter.title}: "${coreSentence}". (a) Identify and explain the two main mechanisms (4 Marks). (b) Deduce the quantitative formulas and solve for standard parameters (4 Marks). (c) State potential errors and safety/accuracy precautions (${dist.marks - 8} Marks).`,
             type: 'long_answer',
-            subjectId: book?.subjectId || 'sub-phy',
-            chapterId: `ch-${book?.subjectId || 'phy'}-${chapter.chapterNumber}`,
+            subjectId: effectiveSubjectId,
+            chapterId: `ch-${effectiveSubjectId}-${chapter.chapterNumber}`,
             chapterNumber: chapter.chapterNumber,
             marks: dist.marks,
             difficulty: 'hard',
             source: 'book_upload',
-            approved: false,
-            correctAnswerText: `Comprehensive multi-step solution.`,
-            markingRubric: 'Equally distributed across parts (a) and (b).'
+            approved: true,
+            correctAnswerText: `Comprehensive multi-part solution with full rubrics.`,
+            markingRubric: `Part (a): 4 marks, Part (b): 4 marks, Part (c): ${dist.marks - 8} marks.`,
+            explanation: `Advanced Bloom's Taxonomy evaluation from ${chapter.title}.`
           });
         }
       }

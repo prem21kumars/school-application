@@ -337,16 +337,23 @@ export const ApiService = {
     subjectId: string;
     chapterId: string;
     questionTypes: QuestionType[];
-    marks: number;
+    marks?: number;
     difficulty: QuestionDifficulty;
-    count: number;
+    count?: number;
     customPrompt?: string;
+    markDistribution?: { marks: number; count: number }[];
   }) => request<Question[]>('/assessments/generate-ai-questions', { method: 'POST', body: JSON.stringify(params) }),
   generateBookQuestions: (params: {
     bookId: string;
     chapterNumbers: number[];
     markDistribution: { marks: number; count: number }[];
     totalQuestions: number;
+    chapters?: BookSource['chapters'];
+    subjectId?: string;
+    bookTitle?: string;
+    groqApiKey?: string;
+    groqModel?: string;
+    useGroqAi?: boolean;
   }) => request<Question[]>('/assessments/generate-book-questions', { method: 'POST', body: JSON.stringify(params) }),
 
   // Exam Attempts & Malpractice
@@ -414,5 +421,13 @@ export const ApiService = {
   // Notifications
   getNotifications: (roleTarget?: string) => request<NotificationItem[]>(`/notifications${roleTarget ? `?roleTarget=${roleTarget}` : ''}`),
   markNotificationRead: (id: string) => request<NotificationItem>(`/notifications/${id}/read`, { method: 'PATCH' }),
-  markAllNotificationsRead: () => request<void>('/notifications/mark-all-read', { method: 'POST' })
+  markAllNotificationsRead: () => request<void>('/notifications/mark-all-read', { method: 'POST' }),
+
+  // Groq AI Backend Configuration
+  getGroqConfig: () => request<{ configured: boolean; model: string; maskedKey: string; enabled: boolean }>('/system/groq-config'),
+  saveGroqConfig: (params: { apiKey: string; model?: string }) =>
+    request<{ success: boolean; message: string; configured: boolean; model: string; maskedKey: string }>('/system/groq-config', {
+      method: 'POST',
+      body: JSON.stringify(params)
+    })
 };
