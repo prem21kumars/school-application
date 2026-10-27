@@ -504,50 +504,31 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
 
       let generated: Question[] = [];
 
-      if (useGroqAi && effectiveGroqKey) {
-        // 1. Attempt backend Groq generation with user's key
-        try {
-          generated = await generateBookQuestions({
-            bookId: selectedBookId,
-            chapterNumbers: chaptersToUse,
-            markDistribution,
-            totalQuestions: totalCount,
-            chapters: filteredChapters,
-            subjectId: selectedSubjectId,
-            bookTitle: uploadedDocMeta.title,
-            groqApiKey: effectiveGroqKey,
-            groqModel: groqModel,
-            useGroqAi: true
-          });
-        } catch (bkErr) {
-          console.warn('Backend Groq generation notice, trying client direct Groq:', bkErr);
+      if (useGroqAi) {
+        if (!effectiveGroqKey || effectiveGroqKey.trim().length === 0) {
+          throw new Error('Groq API Key is required for AI question generation. Please configure your Groq API key in the panel above, or uncheck "Use Groq AI" to generate offline questions.');
         }
 
-        // 2. If backend was offline or didn't return AI questions, fallback to direct client Groq
-        if (!generated || generated.length === 0 || generated[0]?.source === 'book_upload') {
-          const targetChapter = filteredChapters[0];
-          const chapterExcerpt = filteredChapters
-            .map(c => `Chapter ${c.chapterNumber}: ${c.title}\n${c.sampleText || c.summary}`)
-            .join('\n\n') || uploadedDocMeta.rawText.slice(0, 4500);
+        const targetChapter = filteredChapters[0];
+        const chapterExcerpt = filteredChapters
+          .map(c => `Chapter ${c.chapterNumber}: ${c.title}\n${c.sampleText || c.summary}`)
+          .join('\n\n') || uploadedDocMeta.rawText.slice(0, 4500);
 
-          try {
-            const clientGenerated = await generateQuestionsWithGroq({
-              apiKey: effectiveGroqKey,
-              model: groqModel,
-              documentTitle: uploadedDocMeta.title,
-              chapterNumber: targetChapter.chapterNumber,
-              chapterTitle: targetChapter.title,
-              documentExcerpt: chapterExcerpt,
-              markDistribution,
-              subjectId: selectedSubjectId,
-              difficulty: 'medium'
-            });
-            if (clientGenerated && clientGenerated.length > 0) {
-              generated = clientGenerated;
-            }
-          } catch (directErr) {
-            console.warn('Client Groq call also noted:', directErr);
-          }
+        try {
+          generated = await generateQuestionsWithGroq({
+            apiKey: effectiveGroqKey,
+            model: groqModel,
+            documentTitle: uploadedDocMeta.title,
+            chapterNumber: targetChapter.chapterNumber,
+            chapterTitle: targetChapter.title,
+            documentExcerpt: chapterExcerpt,
+            markDistribution,
+            subjectId: selectedSubjectId,
+            difficulty: 'medium'
+          });
+        } catch (directErr: any) {
+          console.error('Direct Groq AI generation error:', directErr);
+          throw new Error(`Groq AI Question Generation Failed: ${directErr?.message || 'Check your Groq API key and network connection.'}`);
         }
       } else {
         generated = await generateBookQuestions({
@@ -565,7 +546,8 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
         throw new Error('No questions could be generated. Please verify mark distribution.');
       }
 
-      setQuestions(prev => [...prev, ...generated.map(q => ({ ...q, approved: true }))]);
+      // Clean replacement of manifest questions: prevents accumulating duplicates across generations
+      setQuestions(generated.map(q => ({ ...q, approved: true })));
       setCandidateBookQuestions(generated);
 
       const totalMarks = generated.reduce((s, q) => s + q.marks, 0);
@@ -573,7 +555,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
         ? `Ch ${selectedChapterNumbers[0]}` 
         : `Chapters ${selectedChapterNumbers.join(', ')}`;
       const aiProvider = useGroqAi ? `Groq AI (${groqModel})` : 'Local Engine';
-      setBookGenSuccess(`⚡ Successfully generated ${generated.length} questions (${totalMarks} Marks) via ${aiProvider} strictly from ${chLabel} of "${uploadedDocMeta.title}" and added to Paper Manifest!`);
+      setBookGenSuccess(`⚡ Successfully generated ${generated.length} distinct questions (${totalMarks} Marks) via ${aiProvider} strictly from ${chLabel} of "${uploadedDocMeta.title}" and loaded into Paper Manifest!`);
     } catch (err: any) {
       console.error('Book question generation error:', err);
       setBookGenError(err?.message || 'Failed to generate questions with Groq AI. Please check your API key.');
@@ -1014,7 +996,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
 
               {examMode === 'offline' && (
                 <div>
-                  <label className="form-label" style={{ marginBottom: '0.35rem' }}>Randomized Sets Count (FR-EX-07)</label>
+                  <label className="form-label" style={{ marginBottom: '0.35rem' }}>Randomized Multi-Sets Count</label>
                   <select 
                     value={setsCount} 
                     onChange={(e) => setSetsCount(Number(e.target.value))}
@@ -2655,7 +2637,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                 )}
 
                 <div>
-                  <label className="form-label">Marking Rubric / Evaluation Criteria (FR-EX-11)</label>
+                  <label className="form-label">Marking Rubric / Evaluation Criteria</label>
                   <input 
                     type="text" 
                     value={manualRubric} 
@@ -2692,7 +2674,37 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                     {questions.length} Qs
                   </span>
                 </div>
-                <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Live question pool</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.2rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Live question pool</span>
+                  {questions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('Clear all staged questions and start with a fresh clean slate?')) {
+                          setQuestions([]);
+                          setCandidateBookQuestions([]);
+                          setCandidateAiQuestions([]);
+                        }
+                      }}
+                      title="Remove all questions and start fresh"
+                      style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        background: '#fee2e2',
+                        color: '#b91c1c',
+                        border: '1px solid #fecaca',
+                        padding: '0.12rem 0.45rem',
+                        borderRadius: '0.35rem',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.2rem'
+                      }}
+                    >
+                      <Trash2 size={11} /> Clear All (Clean Slate)
+                    </button>
+                  )}
+                </div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <span style={{ 
@@ -2915,7 +2927,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
             {/* Action Bar */}
             <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', background: '#ffffff', padding: '1rem 1.5rem', borderRadius: '0.75rem', border: '1px solid #cbd5e1', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', flexWrap: 'wrap', gap: '1rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#0f172a' }}>Offline Question Paper Sets (FR-EX-06 / FR-EX-07)</span>
+                <span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#0f172a' }}>Offline Question Paper Sets — {title || uploadedDocMeta?.title || 'Examination Sets'}</span>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   {previewSets.map((set, idx) => (
                     <button 

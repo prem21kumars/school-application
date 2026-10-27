@@ -106,7 +106,7 @@ export const OfflineQuestionPaperModal: React.FC<OfflineQuestionPaperModalProps>
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 800, fontSize: '1.1rem', color: '#0f172a' }}>
-              Offline Question Paper Sets (FR-EX-06 / FR-EX-07)
+              Offline Question Paper Sets — {assessment.title}
             </span>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
               {sets.map((set, idx) => (

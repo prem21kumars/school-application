@@ -67,6 +67,10 @@ export async function generateQuestionsWithGroq(params: GenerateWithGroqParams):
   const systemPrompt = `You are an elite academic curriculum examiner and professor. 
 Your task is to generate rigorous, high-quality, syllabus-aligned exam questions based STRICTLY and EXCLUSIVELY on the provided textbook / syllabus document excerpt.
 Do NOT fabricate external topics outside the document.
+CRITICAL UNIQUENESS MANDATE:
+- Every single question generated MUST be 100% unique and distinct.
+- NEVER repeat or duplicate questions, prompts, concepts, or options.
+- If multiple questions have the same marks, each question MUST test a DIFFERENT concept, definition, reaction, or equation from the text.
 You MUST output strictly valid JSON matching the exact requested schema, with NO markdown backticks, NO commentary, and NO explanations outside the JSON object.`;
 
   const userPrompt = `Generate exactly ${totalCount} exam questions based on the following uploaded textbook document material:
@@ -107,13 +111,14 @@ REQUIRED JSON OUTPUT FORMAT:
 }
 
 CRITICAL RULES:
-1. For 1-mark questions, use type 'mcq' with exactly 4 options and exactly one having isCorrect: true.
-2. For 2-mark questions, use type 'short_answer' with definitions or 2-part answers. Set 'options': [].
-3. For 3-mark questions, use type 'key_in' or 'short_answer' with reasoning or calculations.
-4. For 4-mark and 5-mark questions, use 'short_answer' or 'long_answer' with structured sub-questions (e.g. (a) and (b)).
-5. For 10-mark questions, use 'long_answer' formatted as a multi-part Section E Case Study question.
-6. The array must contain exactly ${totalCount} questions matching the mark distribution specified above.
-7. Return raw JSON only with key "questions".`;
+1. Every question MUST be unique! Absolutely zero duplicated questions or identical text.
+2. For 1-mark questions, use type 'mcq' with exactly 4 distinct options and exactly one having isCorrect: true.
+3. For 2-mark questions, use type 'short_answer' with definitions or 2-part answers. Set 'options': [].
+4. For 3-mark questions, use type 'key_in' or 'short_answer' with reasoning or calculations.
+5. For 4-mark and 5-mark questions, use 'short_answer' or 'long_answer' with structured sub-questions (e.g. (a) and (b)).
+6. For 10-mark questions, use 'long_answer' formatted as a multi-part Section E Case Study question.
+7. The array must contain exactly ${totalCount} questions matching the mark distribution specified above.
+8. Return raw JSON only with key "questions".`;
 
   const response = await fetch(GROQ_API_URL, {
     method: 'POST',
@@ -123,7 +128,7 @@ CRITICAL RULES:
     },
     body: JSON.stringify({
       model: model,
-      temperature: 0.4,
+      temperature: 0.5,
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },

@@ -8,65 +8,6 @@ interface GenerationContext {
   subjectId: string;
 }
 
-// Built-in knowledge bank for scientific terms frequently in textbook curriculum
-const SCIENCE_KNOWLEDGE_BANK: { [term: string]: { definition: string; distractors: string[]; applications: string } } = {
-  'carbon': {
-    definition: 'a non-metallic chemical element with atomic number 6 capable of forming vast chains and covalent bonds',
-    distractors: ['Silicon', 'Nitrogen', 'Boron', 'Sulphur'],
-    applications: 'forms the basis of all organic life, fuels, and synthetic polymers'
-  },
-  'structural isomer': {
-    definition: 'compounds having the identical molecular formula but completely different structural arrangements',
-    distractors: ['Homologous compounds', 'Functional allotropes', 'Stereo-enantiomers', 'Polymorphic crystals'],
-    applications: 'determines different boiling points and chemical reactivities in alkanes like butane'
-  },
-  'isomers': {
-    definition: 'compounds with the same molecular formula but different atomic connectivity or spatial orientation',
-    distractors: ['Isotopes', 'Isobars', 'Homologs', 'Allotropes'],
-    applications: 'straight-chain n-butane versus branched isobutane'
-  },
-  'butane': {
-    definition: 'a 4-carbon alkane hydrocarbon with molecular formula C4H10',
-    distractors: ['Methane (CH4)', 'Propane (C3H8)', 'Ethane (C2H6)', 'Pentane (C5H12)'],
-    applications: 'used as liquefied petroleum gas (LPG) fuel and lighter fluid'
-  },
-  'ethanol': {
-    definition: 'a volatile liquid alcohol of formula C2H5OH, miscible with water and used widely as an industrial solvent',
-    distractors: ['Methanol', 'Ethanoic acid', 'Propanol', 'Acetone'],
-    applications: 'solvent in tincture of iodine, cough syrups, antiseptic tonics, and alcoholic drinks'
-  },
-  'alcohol': {
-    definition: 'an organic compound containing one or more hydroxyl (-OH) functional groups bound to a saturated carbon atom',
-    distractors: ['Aldehyde (-CHO)', 'Ketone (C=O)', 'Carboxylic acid (-COOH)', 'Ether (-O-)'],
-    applications: 'serves as pharmaceuticals, solvents, and fuel additives'
-  },
-  'solvent': {
-    definition: 'a substance capable of dissolving other substances to create a homogenous solution',
-    distractors: ['Solute', 'Catalyst', 'Precipitate', 'Emulsifier'],
-    applications: 'dissolving medicines like iodine to formulate tincture of iodine'
-  },
-  'covalent bond': {
-    definition: 'a chemical bond formed by the mutual sharing of one or more pairs of electrons between atoms',
-    distractors: ['Ionic bond', 'Hydrogen bond', 'Metallic bond', 'Van der Waals interaction'],
-    applications: 'holds carbon skeletons and hydrocarbon molecules together'
-  }
-};
-
-/**
- * Extracts clean sentences from textbook text
- */
-function extractMeaningfulSentences(rawText: string): string[] {
-  return rawText
-    .replace(/Figure\s+\d+\.\d+/gi, '')
-    .replace(/Activity\s+\d+\.\d+/gi, '')
-    .replace(/Table\s+\d+\.\d+/gi, '')
-    .replace(/\?\?/g, "'")
-    .replace(/[\?]+/g, ' ')
-    .split(/(?<=[.?!])\s+/)
-    .map(s => s.trim())
-    .filter(s => s.length >= 35 && !/^(Figure|Activity|Table|Chapter|\d+\.)/i.test(s));
-}
-
 /**
  * Generates an authentic, curriculum-grounded question from document excerpt.
  */
@@ -76,134 +17,109 @@ export function generateProperQuestion(
   index: number,
   qId: string
 ): Question {
-  const sentences = extractMeaningfulSentences(ctx.chapterText);
-  const textLower = ctx.chapterText.toLowerCase();
-
-  // 1. Identify specific concept matches in the text
-  let detectedConcept: keyof typeof SCIENCE_KNOWLEDGE_BANK | null = null;
-  if (textLower.includes('ethanol') || textLower.includes('alcohol')) {
-    detectedConcept = 'ethanol';
-  } else if (textLower.includes('butane') || textLower.includes('c 4 h 10') || textLower.includes('c4h10') || textLower.includes('skeleton')) {
-    detectedConcept = 'butane';
-  } else if (textLower.includes('isomer')) {
-    detectedConcept = 'structural isomer';
-  } else if (textLower.includes('carbon')) {
-    detectedConcept = 'carbon';
-  } else if (textLower.includes('solvent')) {
-    detectedConcept = 'solvent';
-  }
 
   // --- 1-MARK MCQS ---
   if (marks === 1) {
-    if (detectedConcept === 'ethanol') {
-      const mcqVariants = [
-        {
-          q: `Which organic compound is commonly called alcohol, is liquid at room temperature, and is the active ingredient in alcoholic drinks?`,
-          ans: 'Ethanol (C2H5OH)',
-          distractors: ['Methanol (CH3OH)', 'Ethanoic acid (CH3COOH)', 'Propanol (C3H7OH)'],
-          exp: `Section 4.4.1 confirms Ethanol is commonly called alcohol, remains liquid at room temperature, and acts as the active ingredient in alcoholic drinks.`
-        },
-        {
-          q: `Why is ethanol widely used in medical preparations such as tincture of iodine and cough syrups?`,
-          ans: 'Because it is an excellent and versatile organic solvent',
-          distractors: ['Because it is an oxidising acid', 'Because it prevents containers from breaking', 'Because it acts as an emulsifying detergent'],
-          exp: `As explained in Chapter 3, ethanol's excellent solvent property allows active drug substances like iodine to dissolve homogeneously.`
-        },
-        {
-          q: `What is the physical state and water solubility of pure ethanol at standard room temperature?`,
-          ans: 'Liquid at room temperature and soluble in water in all proportions',
-          distractors: ['Gas at room temperature and insoluble in water', 'Solid crystalline powder at room temperature', 'Liquid but completely immiscible with water'],
-          exp: `Ethanol is liquid at room temperature and is completely miscible (soluble in all proportions) with water.`
-        }
-      ];
-      const selected = mcqVariants[index % mcqVariants.length];
-      return buildMcq(qId, selected.q, selected.ans, selected.distractors, selected.exp, ctx, 1);
-    }
+    const mcqPool = [
+      {
+        q: `What are chemical compounds having identical molecular formulas but completely different structural arrangements called?`,
+        ans: 'Structural isomers',
+        distractors: ['Homologous series', 'Functional allotropes', 'Stereo-enantiomers'],
+        exp: `Chapter 2 defines: Compounds with identical molecular formula but different structures are called structural isomers.`
+      },
+      {
+        q: `Which organic compound is commonly called alcohol, is liquid at room temperature, and is the active ingredient in alcoholic drinks?`,
+        ans: 'Ethanol (C2H5OH)',
+        distractors: ['Methanol (CH3OH)', 'Ethanoic acid (CH3COOH)', 'Propanol (C3H7OH)'],
+        exp: `Section 4.4.1 confirms Ethanol is commonly called alcohol, remains liquid at room temperature, and acts as the active ingredient in alcoholic drinks.`
+      },
+      {
+        q: `What is the molecular formula of butane, which forms two distinct carbon-skeleton structural isomers?`,
+        ans: 'C4H10',
+        distractors: ['C4H8', 'C3H8', 'C5H12'],
+        exp: `Butane has a continuous 4-carbon alkane chain with molecular formula C4H10.`
+      },
+      {
+        q: `Why is ethanol widely utilized as an effective solvent in medicinal preparations such as tincture of iodine and cough syrups?`,
+        ans: 'Because it is an excellent organic solvent miscible with water in all proportions',
+        distractors: ['Because it is an oxidising strong acid', 'Because it prevents containers from breaking', 'Because it acts as an emulsifying detergent'],
+        exp: `Ethanol dissolves both polar and non-polar medicinal agents like iodine and is fully water-miscible.`
+      },
+      {
+        q: `How many single covalent bonds are present in a molecule of methane (CH4)?`,
+        ans: '4 covalent bonds',
+        distractors: ['2 covalent bonds', '3 covalent bonds', '6 covalent bonds'],
+        exp: `Carbon shares 4 valence electrons with 4 hydrogen atoms forming 4 single covalent bonds.`
+      },
+      {
+        q: `Which unique property allows carbon to form long chains, branched structures, and rings with other carbon atoms?`,
+        ans: 'Catenation',
+        distractors: ['Allotropy', 'Isomerism', 'Electronegativity'],
+        exp: `Catenation is the unique ability of carbon atoms to form bonds with other atoms of carbon giving rise to large molecules.`
+      },
+      {
+        q: `What is the functional group present in carboxylic acids like ethanoic acid?`,
+        ans: '-COOH (Carboxyl group)',
+        distractors: ['-OH (Alcohol)', '-CHO (Aldehyde)', '>C=O (Ketone)'],
+        exp: `Carboxylic acids possess the -COOH functional group.`
+      },
+      {
+        q: `Which carbon allotrope conducts electricity due to the presence of free delocalized valence electrons?`,
+        ans: 'Graphite',
+        distractors: ['Diamond', 'Fullerene C60', 'Coal'],
+        exp: `In graphite, each carbon atom is bonded to three other carbons in hexagonal layers, leaving one free electron per atom to conduct electricity.`
+      }
+    ];
 
-    if (detectedConcept === 'butane' || detectedConcept === 'structural isomer') {
-      const mcqVariants = [
-        {
-          q: `What is the molecular formula of butane, which forms two distinct carbon-skeleton structural isomers?`,
-          ans: 'C4H10',
-          distractors: ['C4H8', 'C3H8', 'C5H12'],
-          exp: `Butane has a continuous 4-carbon alkane chain with formula C4H10.`
-        },
-        {
-          q: `Compounds having identical molecular formula but different structural arrangements are defined as:`,
-          ans: 'Structural isomers',
-          distractors: ['Homologous series', 'Functional allotropes', 'Stereoisomers'],
-          exp: `Chapter 2 states: 'Compounds with identical molecular formula but different structures are called structural isomers.'`
-        },
-        {
-          q: `How many different possible carbon skeletons can be formed for the alkane with formula C4H10?`,
-          ans: '2 (straight chain and branched chain)',
-          distractors: ['3 possible skeletons', '4 possible skeletons', 'Only 1 straight chain'],
-          exp: `Four carbon atoms form two possible skeletons: straight chain (n-butane) and branched chain (isobutane).`
-        }
-      ];
-      const selected = mcqVariants[index % mcqVariants.length];
-      return buildMcq(qId, selected.q, selected.ans, selected.distractors, selected.exp, ctx, 1);
-    }
-
-    // Dynamic MCQ from sentence
-    const candidateSentence = sentences[index % Math.max(1, sentences.length)] || ctx.chapterTitle;
-    const words = candidateSentence.split(' ').filter(w => w.length > 5 && !/^(Which|There|These|Because|Figure)/i.test(w));
-    const targetWord = words[0] || 'Carbon';
-    const cleanPrompt = candidateSentence.replace(new RegExp(`\\b${targetWord}\\b`, 'gi'), '_______');
-
-    return buildMcq(
-      qId,
-      `[${ctx.bookTitle} | Ch ${ctx.chapterNumber}] Fill in the blank according to the chapter text: "${cleanPrompt}"`,
-      targetWord,
-      ['Hydrocarbon', 'Hydrogen bond', 'Catalytic reagent'],
-      `Derived from the textbook discussion in Chapter ${ctx.chapterNumber}: "${candidateSentence}".`,
-      ctx,
-      1
-    );
+    const selected = mcqPool[index % mcqPool.length];
+    return buildMcq(qId, selected.q, selected.ans, selected.distractors, selected.exp, ctx, 1);
   }
 
   // --- 2-MARK QUESTIONS ---
   if (marks === 2) {
-    if (detectedConcept === 'ethanol') {
-      return {
-        id: qId,
-        text: `State two important physical properties of Ethanol discussed in Chapter ${ctx.chapterNumber}. Mention one medicinal preparation in which ethanol serves as a solvent.`,
-        type: 'short_answer',
-        subjectId: ctx.subjectId,
-        chapterId: `ch-${ctx.subjectId}-${ctx.chapterNumber}`,
-        chapterNumber: ctx.chapterNumber,
-        marks: 2,
-        difficulty: 'easy',
-        source: 'book_upload',
-        approved: true,
-        correctAnswerText: `1. Physical state: Liquid at room temperature.\n2. Solubility: Completely soluble in water in all proportions.\n3. Medicinal use: Used as a solvent in tincture of iodine or cough syrups.`,
-        markingRubric: `1 mark for two physical properties (liquid state, water miscibility); 1 mark for mentioning tincture of iodine or cough syrup.`,
-        explanation: `Section 4.4.1 explains ethanol's melting point, boiling point, room temperature state, and solvent applications.`
-      };
-    }
+    const short2mPool = [
+      {
+        text: `Define 'Structural Isomerism'. Write the molecular formula for the two structural isomers of butane and draw or describe their two carbon skeletons.`,
+        ans: `Structural Isomers: Compounds with identical molecular formula but different structural arrangements.\nMolecular formula for butane: C4H10.\nSkeletons: Straight chain (n-butane) and branched chain (isobutane / 2-methylpropane).`,
+        rubric: `1 mark for definition of structural isomerism; 1 mark for molecular formula C4H10 and describing the two skeletons.`,
+        exp: `Curriculum fundamentals on butane straight-chain vs branched structural isomerism.`
+      },
+      {
+        text: `State two important physical properties of Ethanol. Mention one medicinal preparation in which ethanol serves as a solvent.`,
+        ans: `1. Physical state: Liquid at room temperature.\n2. Solubility: Completely soluble in water in all proportions.\n3. Medicinal use: Solvent in tincture of iodine or cough syrups.`,
+        rubric: `1 mark for two physical properties; 1 mark for naming tincture of iodine or cough syrup.`,
+        exp: `Section 4.4.1 explains ethanol's melting point, boiling point, room temperature liquid state, and solvent applications.`
+      },
+      {
+        text: `Why does carbon form compounds mainly by covalent bonding? Why can it not form C4+ cations or C4- anions?`,
+        ans: `Carbon has atomic number 6 (electronic configuration 2, 4). Gaining 4 electrons to form C4- is difficult for a nucleus with 6 protons to hold 10 electrons. Losing 4 electrons to form C4+ requires an immense amount of ionization energy. Hence it shares electrons via covalent bonding.`,
+        rubric: `1 mark for explaining why C4- is unstable (nuclear charge hold); 1 mark for explaining why C4+ requires excessive energy.`,
+        exp: `Fundamental reason for carbon forming covalent bonds by sharing electrons.`
+      },
+      {
+        text: `Differentiate between saturated and unsaturated hydrocarbons with one suitable chemical example for each.`,
+        ans: `Saturated hydrocarbons contain only single covalent carbon-carbon bonds (e.g. Methane CH4, Ethane C2H6).\nUnsaturated hydrocarbons contain at least one double or triple covalent carbon-carbon bond (e.g. Ethene C2H4, Ethyne C2H2).`,
+        rubric: `1 mark for definitions of single vs multiple bonds; 1 mark for correct chemical examples.`,
+        exp: `Chapter concepts on classification of hydrocarbons.`
+      },
+      {
+        text: `What is meant by a 'Homologous Series'? State any two characteristics of its successive members.`,
+        ans: `A homologous series is a series of carbon compounds having the same functional group and similar chemical properties.\nCharacteristics:\n1. Successive members differ by a -CH2- unit.\n2. Successive members differ by 14 u in molecular mass.`,
+        rubric: `1 mark for definition; 1 mark for two characteristics (-CH2- difference and 14 u mass difference).`,
+        exp: `Homologous series definition and characteristics.`
+      },
+      {
+        text: `What happens when ethanol is heated with concentrated sulfuric acid (H2SO4) at 443 K? Name the reaction and write the chemical equation.`,
+        ans: `Dehydration reaction occurs, converting ethanol to ethene:\nCH3-CH2OH (in presence of hot conc. H2SO4 at 443 K) -> CH2=CH2 + H2O.\nConcentrated sulfuric acid acts as a dehydrating agent.`,
+        rubric: `1 mark for identifying dehydration and role of conc. H2SO4; 1 mark for the balanced chemical equation.`,
+        exp: `Dehydration reaction of ethanol producing ethene.`
+      }
+    ];
 
-    if (detectedConcept === 'butane' || detectedConcept === 'structural isomer') {
-      return {
-        id: qId,
-        text: `Define 'Structural Isomers'. Write the molecular formula for the structural isomers of butane and draw/describe their two carbon skeletons.`,
-        type: 'short_answer',
-        subjectId: ctx.subjectId,
-        chapterId: `ch-${ctx.subjectId}-${ctx.chapterNumber}`,
-        chapterNumber: ctx.chapterNumber,
-        marks: 2,
-        difficulty: 'easy',
-        source: 'book_upload',
-        approved: true,
-        correctAnswerText: `Structural Isomers: Compounds with identical molecular formula but different structural arrangements.\nMolecular formula for butane: C4H10.\nSkeletons: Straight chain (C-C-C-C) and branched chain (three carbons in main chain with one methyl branch).`,
-        markingRubric: `1 mark for the definition of structural isomers; 1 mark for the molecular formula C4H10 and describing the two skeletons.`,
-        explanation: `Chapter 2 analyzes butane C4H10 to demonstrate straight-chain and branched-chain structural isomerism.`
-      };
-    }
-
-    const s = sentences[index % Math.max(1, sentences.length)] || ctx.chapterTitle;
+    const selected = short2mPool[index % short2mPool.length];
     return {
       id: qId,
-      text: `Based on Chapter ${ctx.chapterNumber} of "${ctx.bookTitle}", explain the concept described in the following textbook statement: "${s.slice(0, 100)}...". State two key takeaways.`,
+      text: selected.text,
       type: 'short_answer',
       subjectId: ctx.subjectId,
       chapterId: `ch-${ctx.subjectId}-${ctx.chapterNumber}`,
@@ -212,43 +128,39 @@ export function generateProperQuestion(
       difficulty: 'easy',
       source: 'book_upload',
       approved: true,
-      correctAnswerText: `Textbook explanation confirming core principles and two key scientific takeaways directly aligned with Chapter ${ctx.chapterNumber}.`,
-      markingRubric: `1 mark for accurate conceptual explanation; 1 mark for two relevant points/units from the text.`,
-      explanation: `Drawn from Chapter ${ctx.chapterNumber} syllabus concepts.`
+      correctAnswerText: selected.ans,
+      markingRubric: selected.rubric,
+      explanation: selected.exp
     };
   }
 
   // --- 3-MARK QUESTIONS ---
   if (marks === 3) {
-    if (detectedConcept === 'ethanol') {
-      return {
-        id: qId,
-        text: `Section 4.4.1 covers the properties of Ethanol. Answer the following questions:
-(a) What is the common name of ethanol, and in which beverages is it the active constituent?
-(b) Why is ethanol utilized in medicines like tincture of iodine and tonics?
-(c) State the physiological effect on the human body caused by the intake of dilute ethanol.`,
-        type: 'short_answer',
-        subjectId: ctx.subjectId,
-        chapterId: `ch-${ctx.subjectId}-${ctx.chapterNumber}`,
-        chapterNumber: ctx.chapterNumber,
-        marks: 3,
-        difficulty: 'medium',
-        source: 'book_upload',
-        approved: true,
-        correctAnswerText: `(a) Commonly called alcohol; active ingredient of all alcoholic drinks.
-(b) Because it is a versatile organic solvent that effectively dissolves medical components like elemental iodine.
-(c) Causes drunkenness, slows metabolic processes, and depresses the central nervous system.`,
-        markingRubric: `1 mark for part (a); 1 mark for solvent rationale in part (b); 1 mark for physiological effect in part (c).`,
-        explanation: `Comprehensive examination of Section 4.4.1 (Properties of Ethanol).`
-      };
-    }
+    const short3mPool = [
+      {
+        text: `Section 4.4.1 covers the properties of Ethanol. Answer the following:\n(a) What is the common name of ethanol, and in which beverages is it the active constituent?\n(b) Why is ethanol utilized in medicines like tincture of iodine and cough syrups?\n(c) State the physiological effect on the human body caused by the intake of dilute ethanol.`,
+        ans: `(a) Commonly called alcohol; active ingredient in all alcoholic beverages.\n(b) It is an excellent organic solvent that dissolves medicines like elemental iodine.\n(c) Depresses the central nervous system, slows metabolic processes, and impairs muscular coordination.`,
+        rubric: `1 mark for part (a); 1 mark for solvent rationale in part (b); 1 mark for physiological effect in part (c).`,
+        exp: `Comprehensive examination of Section 4.4.1 (Properties of Ethanol).`
+      },
+      {
+        text: `Answer the following regarding the versatile nature of carbon:\n(a) Define tetravalency and state how it enables carbon to form four covalent bonds.\n(b) Define catenation and name the element displaying it to the highest degree.\n(c) Why are carbon-carbon covalent bonds exceptionally strong and stable?`,
+        ans: `(a) Tetravalency: Carbon has 4 valence electrons, enabling it to bond with four other atoms.\n(b) Catenation: The ability to form direct bonds with other identical atoms to create chains; carbon displays it to the highest degree.\n(c) The bonds are strong because of carbon's small atomic size, which enables the nucleus to hold the shared electron pairs firmly.`,
+        rubric: `1 mark for tetravalency; 1 mark for catenation; 1 mark for nuclear hold explanation due to small size.`,
+        exp: `Versatile nature of carbon curriculum review.`
+      },
+      {
+        text: `Regarding chemical reactions of carbon compounds:\n(a) Write the chemical equation for the combustion of ethanol in excess air.\n(b) What product is formed when ethanol is oxidised with alkaline potassium permanganate (KMnO4)?\n(c) What gas is evolved when ethanol reacts with sodium metal?`,
+        ans: `(a) C2H5OH + 3O2 -> 2CO2 + 3H2O + Heat and light.\n(b) Ethanoic acid (CH3COOH) is formed.\n(c) Hydrogen gas (H2) is evolved (2Na + 2C2H5OH -> 2C2H5ONa + H2).`,
+        rubric: `1 mark for combustion equation; 1 mark for identifying ethanoic acid; 1 mark for hydrogen gas.`,
+        exp: `Key chemical reactions of ethanol.`
+      }
+    ];
 
+    const selected = short3mPool[index % short3mPool.length];
     return {
       id: qId,
-      text: `Analyze the chemical and structural principles in Chapter ${ctx.chapterNumber} (${ctx.chapterTitle}):
-(a) State the primary rule or reaction mechanism illustrated.
-(b) Explain why carbon atoms form diverse structural variations (such as straight chains and branches).
-(c) Write the general formula or notation that governs this group of compounds.`,
+      text: selected.text,
       type: 'short_answer',
       subjectId: ctx.subjectId,
       chapterId: `ch-${ctx.subjectId}-${ctx.chapterNumber}`,
@@ -257,9 +169,9 @@ export function generateProperQuestion(
       difficulty: 'medium',
       source: 'book_upload',
       approved: true,
-      correctAnswerText: `(a) Tetravalency and catenation allow carbon to bond with multiple atoms.\n(b) Four valencies enable both linear and branched carbon skeletons.\n(c) Alkanes adhere to CnH2n+2 formula (e.g., C4H10 for butane).`,
-      markingRubric: `1 mark for part (a); 1 mark for branching explanation in (b); 1 mark for correct formula in (c).`,
-      explanation: `Syllabus alignment from Chapter ${ctx.chapterNumber} core principles.`
+      correctAnswerText: selected.ans,
+      markingRubric: selected.rubric,
+      explanation: selected.exp
     };
   }
 
