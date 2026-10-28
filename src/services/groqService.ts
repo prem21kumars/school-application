@@ -22,7 +22,7 @@ export const GroqStorage = {
     if (typeof window === 'undefined') return DEFAULT_MODEL;
     const stored = localStorage.getItem('quiz_groq_model');
     // Auto-migrate any deprecated/inaccessible Llama models to active Groq model
-    if (!stored || stored.includes('llama') || stored.includes('instant') || stored.includes('versatile')) {
+    if (!stored || stored.includes('llama-3.3') || stored.includes('versatile')) {
       try { localStorage.setItem('quiz_groq_model', DEFAULT_MODEL); } catch {}
       return DEFAULT_MODEL;
     }
@@ -181,38 +181,46 @@ CRITICAL RULES:
       // ignore parse error
     }
 
-    // Auto-fallback if requested model is restricted/not found (e.g., llama-3.3-70b-versatile -> llama-3.1-8b-instant)
-    const isModelNotFound = /model_not_found|does not exist|do not have access/i.test(errorDetail);
-    const candidateFallbacks = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
-    const nextModel = candidateFallbacks.find(m => m !== activeModel);
-    if (isModelNotFound && nextModel) {
-      console.warn(`Model ${activeModel} not accessible, automatically falling back to ${nextModel}...`);
-      activeModel = nextModel;
-      GroqStorage.setModel(nextModel);
-      response = await fetch(GROQ_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey.trim()}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: activeModel,
-          temperature: 0.5,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ]
-        })
-      });
-
-      if (!response.ok) {
-        let fallbackErr = `Groq API HTTP ${response.status}: ${response.statusText}`;
+    // Auto-fallback if requested model is restricted/not found (e.g., llama-3.3-70b-versatile -> openai/gpt-oss-120b / llama-3.1-8b-instant)
+    const isModelNotFound = /model_not_found|does not exist|do not have access|decommissioned/i.test(errorDetail);
+    const candidateFallbacks = ['openai/gpt-oss-120b', 'llama-3.1-8b-instant', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    if (isModelNotFound) {
+      let fallbackSucceeded = false;
+      const fallbacksToTry = candidateFallbacks.filter(m => m !== activeModel);
+      for (const nextModel of fallbacksToTry) {
+        console.warn(`Model ${activeModel} not accessible, attempting fallback to ${nextModel}...`);
         try {
-          const errJson = await response.json();
-          fallbackErr = errJson?.error?.message || fallbackErr;
-        } catch {}
-        throw new Error(fallbackErr);
+          const fallbackResponse = await fetch(GROQ_API_URL, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey.trim()}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: nextModel,
+              temperature: 0.5,
+              response_format: { type: 'json_object' },
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+              ]
+            })
+          });
+
+          if (fallbackResponse.ok) {
+            response = fallbackResponse;
+            activeModel = nextModel;
+            GroqStorage.setModel(nextModel);
+            fallbackSucceeded = true;
+            break;
+          }
+        } catch (e) {
+          console.warn(`Fallback to ${nextModel} network error:`, e);
+        }
+      }
+
+      if (!fallbackSucceeded) {
+        throw new Error(errorDetail);
       }
     } else {
       throw new Error(errorDetail);

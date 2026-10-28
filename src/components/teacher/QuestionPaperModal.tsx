@@ -2287,7 +2287,9 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                           style={{ fontSize: '0.8125rem' }}
                         >
                           <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Recommended - Flagship 120B)</option>
+                          <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fast & High Availability 8B)</option>
                           <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Ultra-Fast 20B)</option>
+                          <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Meta Llama 70B)</option>
                           <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Qwen Multimodal 27B)</option>
                         </select>
                       </div>
