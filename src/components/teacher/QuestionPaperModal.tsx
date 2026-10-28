@@ -35,7 +35,7 @@ import {
   type ExtractedDocument 
 } from '../../utils/documentExtractor';
 
-import { GroqStorage, generateQuestionsWithGroq } from '../../services/groqService';
+import { GroqStorage, generateQuestionsWithGroq, testGroqApiKey } from '../../services/groqService';
 
 import { FeedbackModal } from '../common/FeedbackModal';
 
@@ -138,7 +138,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
 
   // Book / Content Upload Form State
   const [selectedBookId, setSelectedBookId] = useState(books[0]?.id || 'bk-phy-10');
-  const [selectedChapterNumbers, setSelectedChapterNumbers] = useState<number[]>([1, 2, 3]);
+  const [selectedChapterNumbers, setSelectedChapterNumbers] = useState<number[]>([1]);
   const [dist1m, setDist1m] = useState(3);
   const [dist2m, setDist2m] = useState(2);
   const [dist3m, setDist3m] = useState(2);
@@ -155,6 +155,8 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
   const [groqApiKeyInput, setGroqApiKeyInput] = useState(GroqStorage.getApiKey());
   const [groqModel, setGroqModel] = useState(GroqStorage.getModel());
   const [showGroqConfigModal, setShowGroqConfigModal] = useState(false);
+  const [isTestingGroqKey, setIsTestingGroqKey] = useState(false);
+  const [groqKeyFeedback, setGroqKeyFeedback] = useState<{ status: 'valid' | 'invalid'; message: string } | null>(null);
 
   // Document Upload (PDF, Word, Text) & Book Copy State
   const [docUploadMode, setDocUploadMode] = useState<'upload' | 'paste' | 'library'>('upload');
@@ -291,7 +293,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
       });
 
       setSelectedBookId(created.id);
-      setSelectedChapterNumbers(extracted.chapters.map(c => c.chapterNumber));
+      setSelectedChapterNumbers(extracted.chapters.length > 0 ? [extracted.chapters[0].chapterNumber] : []);
     } catch (err: any) {
       console.error('File parsing error:', err);
       setFileUploadError(err?.message || 'Failed to extract text from document. Please ensure it is a valid PDF, Word (.docx), or text file.');
@@ -325,7 +327,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
       });
 
       setSelectedBookId(created.id);
-      setSelectedChapterNumbers(extracted.chapters.map(c => c.chapterNumber));
+      setSelectedChapterNumbers(extracted.chapters.length > 0 ? [extracted.chapters[0].chapterNumber] : []);
       setPastedText('');
       setPastedTitle('');
       setPastedAuthor('');
@@ -413,21 +415,50 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
     setSelectedCandidateIds([]);
   };
 
+  const handleTestGroqKey = async () => {
+    const trimmed = groqApiKeyInput.trim();
+    if (!trimmed) {
+      setGroqKeyFeedback({ status: 'invalid', message: 'Please enter a Groq API key (starts with gsk_).' });
+      return;
+    }
+    setIsTestingGroqKey(true);
+    setGroqKeyFeedback(null);
+    try {
+      const result = await testGroqApiKey(trimmed);
+      if (result.valid) {
+        setGroqKeyFeedback({ status: 'valid', message: '✓ Key is active and verified by Groq Cloud!' });
+      } else {
+        setGroqKeyFeedback({ status: 'invalid', message: `❌ Invalid Key: ${result.error || 'Rejected by Groq API'}` });
+      }
+    } catch (e: any) {
+      setGroqKeyFeedback({ status: 'invalid', message: `❌ Connection error: ${e?.message || 'Failed to reach api.groq.com'}` });
+    } finally {
+      setIsTestingGroqKey(false);
+    }
+  };
+
   const handleSaveGroqConfig = async () => {
     const trimmed = groqApiKeyInput.trim();
     if (!trimmed) {
       setBookGenError('Please enter a valid Groq API key.');
       return;
     }
+
+    setIsTestingGroqKey(true);
+    const testResult = await testGroqApiKey(trimmed);
+    setIsTestingGroqKey(false);
+
+    if (!testResult.valid) {
+      setGroqKeyFeedback({ status: 'invalid', message: `❌ Invalid Key: ${testResult.error || 'Please provide an active Groq API key.'}` });
+      setBookGenError(`Groq API Key rejected: ${testResult.error || 'Invalid API Key'}`);
+      return;
+    }
+
     GroqStorage.setApiKey(trimmed);
     GroqStorage.setModel(groqModel);
+    setGroqKeyFeedback({ status: 'valid', message: '✓ Key verified and saved!' });
     setBookGenError(null);
-    setBookGenSuccess('⚡ Groq API Key saved & syncing with backend...');
-
-    // Auto-select chapters if none selected
-    if (selectedChapterNumbers.length === 0 && currentBook?.chapters?.length) {
-      setSelectedChapterNumbers(currentBook.chapters.map(c => c.chapterNumber));
-    }
+    setBookGenSuccess('⚡ Groq API Key verified & saved! Syncing with backend...');
 
     try {
       const res = await ApiService.saveGroqConfig({ apiKey: trimmed, model: groqModel });
@@ -447,17 +478,8 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
       return;
     }
 
-    // Auto-select all chapters if none selected so the teacher is never blocked
-    let chaptersToUse = selectedChapterNumbers;
-    if (chaptersToUse.length === 0 && uploadedDocMeta.chapters.length > 0) {
-      chaptersToUse = uploadedDocMeta.chapters.map(c => c.chapterNumber);
-      setSelectedChapterNumbers(chaptersToUse);
-    }
-
-    if (chaptersToUse.length === 0) {
-      setBookGenError('Please select at least one chapter from the uploaded document to generate questions.');
-      return;
-    }
+    const hasSpecificChapters = selectedChapterNumbers.length > 0;
+    const chaptersToUse = hasSpecificChapters ? selectedChapterNumbers : uploadedDocMeta.chapters.map(c => c.chapterNumber);
 
     const markDistribution = [
       { marks: 1, count: dist1m },
@@ -511,8 +533,12 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
 
         const targetChapter = filteredChapters[0];
         const chapterExcerpt = filteredChapters
-          .map(c => `Chapter ${c.chapterNumber}: ${c.title}\n${c.sampleText || c.summary}`)
-          .join('\n\n') || uploadedDocMeta.rawText.slice(0, 4500);
+          .map(c => `=== CHAPTER ${c.chapterNumber}: ${c.title} ===\n${(c as any).fullText || c.sampleText || c.summary}`)
+          .join('\n\n\n') || uploadedDocMeta.rawText.slice(0, 18000);
+
+        const chapterHeading = filteredChapters.length === 1 
+          ? targetChapter.title 
+          : filteredChapters.map(c => `Ch ${c.chapterNumber}: ${c.title}`).join(' | ');
 
         try {
           generated = await generateQuestionsWithGroq({
@@ -520,7 +546,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
             model: groqModel,
             documentTitle: uploadedDocMeta.title,
             chapterNumber: targetChapter.chapterNumber,
-            chapterTitle: targetChapter.title,
+            chapterTitle: chapterHeading,
             documentExcerpt: chapterExcerpt,
             markDistribution,
             subjectId: selectedSubjectId,
@@ -558,7 +584,17 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
       setBookGenSuccess(`⚡ Successfully generated ${generated.length} distinct questions (${totalMarks} Marks) via ${aiProvider} strictly from ${chLabel} of "${uploadedDocMeta.title}" and loaded into Paper Manifest!`);
     } catch (err: any) {
       console.error('Book question generation error:', err);
-      setBookGenError(err?.message || 'Failed to generate questions with Groq AI. Please check your API key.');
+      const isApiKeyErr = /api key|401|unauthorized/i.test(err?.message || '');
+      if (isApiKeyErr) {
+        setShowGroqConfigModal(true);
+        setGroqKeyFeedback({ 
+          status: 'invalid', 
+          message: '❌ Groq rejected your API key ("Invalid API Key"). Please update it with a valid key starting with gsk_ from console.groq.com.' 
+        });
+        setBookGenError('Invalid Groq API Key: Please update your Groq key below or uncheck "Use Groq AI" to generate offline.');
+      } else {
+        setBookGenError(err?.message || 'Failed to generate questions with Groq AI. Please check your API key.');
+      }
     } finally {
       setIsBookGenerating(false);
     }
@@ -2106,18 +2142,18 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <label className="form-label" style={{ margin: 0 }}>Select Chapters to Include (Multi-chapter selection supported)</label>
+                      <label className="form-label" style={{ margin: 0 }}>Select Chapters to Include <span style={{ fontSize: '0.725rem', color: '#64748b', fontWeight: 400 }}>(Optional)</span></label>
                       <span style={{ 
                         fontSize: '0.7rem', 
-                        color: selectedChapterNumbers.length > 0 ? '#166534' : '#991b1b', 
-                        background: selectedChapterNumbers.length > 0 ? '#dcfce7' : '#fee2e2', 
-                        padding: '0.15rem 0.5rem', 
+                        color: selectedChapterNumbers.length > 0 ? '#166534' : '#4338ca', 
+                        background: selectedChapterNumbers.length > 0 ? '#dcfce7' : '#e0e7ff', 
+                        padding: '0.15rem 0.55rem', 
                         borderRadius: '1rem', 
                         fontWeight: 600 
                       }}>
                         {selectedChapterNumbers.length > 0 
                           ? `✓ ${selectedChapterNumbers.length} Chapter${selectedChapterNumbers.length > 1 ? 's' : ''} Selected` 
-                          : '⚠️ Select at least 1 chapter'}
+                          : '📄 Entire Document (All Chapters)'}
                       </span>
                     </div>
                     <button
@@ -2250,14 +2286,31 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                           className="form-select"
                           style={{ fontSize: '0.8125rem' }}
                         >
-                          <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (Recommended)</option>
-                          <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (Fastest)</option>
-                          <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+                          <option value="openai/gpt-oss-120b">openai/gpt-oss-120b (Recommended - Flagship 120B)</option>
+                          <option value="openai/gpt-oss-20b">openai/gpt-oss-20b (Ultra-Fast 20B)</option>
+                          <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b (Qwen Multimodal 27B)</option>
                         </select>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.25rem' }}>
+                    {groqKeyFeedback && (
+                      <div style={{
+                        background: groqKeyFeedback.status === 'valid' ? '#f0fdf4' : '#fef2f2',
+                        border: `1px solid ${groqKeyFeedback.status === 'valid' ? '#bbf7d0' : '#fecaca'}`,
+                        borderRadius: '0.375rem',
+                        padding: '0.5rem 0.75rem',
+                        fontSize: '0.75rem',
+                        color: groqKeyFeedback.status === 'valid' ? '#166534' : '#991b1b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem'
+                      }}>
+                        {groqKeyFeedback.status === 'valid' ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+                        <span>{groqKeyFeedback.message}</span>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                       <a 
                         href="https://console.groq.com/keys" 
                         target="_blank" 
@@ -2266,14 +2319,26 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                       >
                         Get a free Groq API key at console.groq.com ↗
                       </a>
-                      <button
-                        type="button"
-                        onClick={handleSaveGroqConfig}
-                        className="btn-primary btn-sm"
-                        style={{ background: '#7c3aed', borderColor: '#7c3aed', fontSize: '0.75rem' }}
-                      >
-                        <CheckCircle2 size={13} /> Save Groq Settings & Sync Backend
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button
+                          type="button"
+                          onClick={handleTestGroqKey}
+                          disabled={isTestingGroqKey}
+                          className="btn-secondary btn-sm"
+                          style={{ fontSize: '0.75rem', padding: '0.35rem 0.65rem' }}
+                        >
+                          {isTestingGroqKey ? 'Testing...' : 'Test Key'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSaveGroqConfig}
+                          disabled={isTestingGroqKey}
+                          className="btn-primary btn-sm"
+                          style={{ background: '#7c3aed', borderColor: '#7c3aed', fontSize: '0.75rem' }}
+                        >
+                          <CheckCircle2 size={13} /> {isTestingGroqKey ? 'Verifying...' : 'Save & Verify Key'}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2374,7 +2439,7 @@ export const QuestionPaperModal: React.FC<QuestionPaperModalProps> = ({ onClose,
                       ? (useGroqAi ? 'Groq AI Generating Questions...' : 'Extracting & Generating...') 
                       : !uploadedDocMeta
                         ? 'Upload Document to Generate'
-                        : `Generate ${dist1m + dist2m + dist3m + dist4m + dist5m + dist10m} Questions ${useGroqAi ? 'with Groq AI ⚡' : 'from Document'} (${selectedChapterNumbers.length === 0 ? 'All Chapters' : selectedChapterNumbers.length === 1 ? `Ch ${selectedChapterNumbers[0]}` : `${selectedChapterNumbers.length} Chapters`})`}
+                        : `Generate ${dist1m + dist2m + dist3m + dist4m + dist5m + dist10m} Questions ${useGroqAi ? 'with Groq AI ⚡' : 'from Document'} (${selectedChapterNumbers.length === 0 ? 'Entire Document' : selectedChapterNumbers.length === 1 ? `Chapter ${selectedChapterNumbers[0]}` : `${selectedChapterNumbers.length} Selected Chapters`})`}
                   </button>
 
                   {candidateBookQuestions.length > 0 && (

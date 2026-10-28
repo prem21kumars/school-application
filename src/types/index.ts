@@ -220,5 +220,6 @@ export interface BookSource {
     pageRange: string;
     summary: string;
     sampleText: string;
+    fullText?: string;
   }[];
 }

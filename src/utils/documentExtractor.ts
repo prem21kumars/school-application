@@ -12,6 +12,7 @@ export interface ExtractedChapter {
   pageRange: string;
   summary: string;
   sampleText: string;
+  fullText?: string;
 }
 
 export interface ExtractedDocument {
@@ -38,7 +39,8 @@ export function segmentTextIntoChapters(rawText: string, defaultTitle = 'Uploade
         title: 'Unit 1: Core Fundamentals & Curriculum',
         pageRange: 'pp. 1-15',
         summary: 'Introductory concepts and syllabus definitions.',
-        sampleText: 'Standard curriculum excerpt.'
+        sampleText: 'Standard curriculum excerpt.',
+        fullText: 'Standard curriculum excerpt.'
       }
     ];
   }
@@ -79,7 +81,8 @@ export function segmentTextIntoChapters(rawText: string, defaultTitle = 'Uploade
         title: current.title.slice(0, 80),
         pageRange: `pp. ${i * 20 + 1}-${(i + 1) * 20}`,
         summary: sample.slice(0, 160) + (sample.length > 160 ? '...' : ''),
-        sampleText: sample || `Curriculum topics and exercises from ${current.title}.`
+        sampleText: sample || `Curriculum topics and exercises from ${current.title}.`,
+        fullText: sectionText
       });
     }
     return chapters;
@@ -112,7 +115,8 @@ export function segmentTextIntoChapters(rawText: string, defaultTitle = 'Uploade
         title: `Unit ${i + 1}: ${unitThemes[i] || firstLine}`,
         pageRange: `pp. ${i * 15 + 1}-${(i + 1) * 15}`,
         summary: combined.slice(0, 150) + '...',
-        sampleText: combined.slice(0, 600)
+        sampleText: combined.slice(0, 600),
+        fullText: combined
       });
     }
 
@@ -122,7 +126,8 @@ export function segmentTextIntoChapters(rawText: string, defaultTitle = 'Uploade
         title: `Section 1: ${defaultTitle}`,
         pageRange: 'pp. 1-25',
         summary: trimmed.slice(0, 150),
-        sampleText: trimmed.slice(0, 500)
+        sampleText: trimmed.slice(0, 500),
+        fullText: trimmed
       }
     ];
   }
@@ -134,7 +139,8 @@ export function segmentTextIntoChapters(rawText: string, defaultTitle = 'Uploade
       title: `Unit 1: ${defaultTitle.replace(/\.[^/.]+$/, '')}`,
       pageRange: 'pp. 1-30',
       summary: trimmed.slice(0, 180) + '...',
-      sampleText: trimmed.slice(0, 600)
+      sampleText: trimmed.slice(0, 600),
+      fullText: trimmed
     }
   ];
 }

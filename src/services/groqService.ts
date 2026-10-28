@@ -1,7 +1,7 @@
 import type { Question, QuestionDifficulty, QuestionOption } from '../types';
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 
 export interface GroqConfig {
   apiKey: string;
@@ -20,7 +20,13 @@ export const GroqStorage = {
   },
   getModel: (): string => {
     if (typeof window === 'undefined') return DEFAULT_MODEL;
-    return localStorage.getItem('quiz_groq_model') || DEFAULT_MODEL;
+    const stored = localStorage.getItem('quiz_groq_model');
+    // Auto-migrate any deprecated/inaccessible Llama models to active Groq model
+    if (!stored || stored.includes('llama') || stored.includes('instant') || stored.includes('versatile')) {
+      try { localStorage.setItem('quiz_groq_model', DEFAULT_MODEL); } catch {}
+      return DEFAULT_MODEL;
+    }
+    return stored;
   },
   setModel: (model: string): void => {
     if (typeof window === 'undefined') return;
@@ -31,6 +37,30 @@ export const GroqStorage = {
     return Boolean(key && key.trim().length > 5 && !key.includes('YOUR_KEY'));
   }
 };
+
+/**
+ * Validates a Groq API key against Groq's models endpoint without consuming generation quota.
+ */
+export async function testGroqApiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+  if (!apiKey || !apiKey.trim()) {
+    return { valid: false, error: 'API key is empty.' };
+  }
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey.trim()}`
+      }
+    });
+    if (res.ok) {
+      return { valid: true };
+    }
+    const data = await res.json().catch(() => null);
+    return { valid: false, error: data?.error?.message || `HTTP ${res.status}: ${res.statusText}` };
+  } catch (e: any) {
+    return { valid: false, error: e?.message || 'Network connection failed' };
+  }
+}
 
 export interface GenerateWithGroqParams {
   documentTitle: string;
@@ -64,24 +94,28 @@ export async function generateQuestionsWithGroq(params: GenerateWithGroqParams):
     .map(d => `- ${d.count} question(s) worth ${d.marks} mark(s) each`)
     .join('\n');
 
-  const systemPrompt = `You are an elite academic curriculum examiner and professor. 
-Your task is to generate rigorous, high-quality, syllabus-aligned exam questions based STRICTLY and EXCLUSIVELY on the provided textbook / syllabus document excerpt.
-Do NOT fabricate external topics outside the document.
+  const systemPrompt = `You are a strict academic curriculum examiner.
+CRITICAL GROUNDING MANDATE (ZERO EXTERNAL FABRICATION):
+- You must generate questions STRICTLY, 100% EXCLUSIVELY from the specific textbook/document text provided below.
+- Do NOT use outside general knowledge, do NOT invent concepts, equations, names, or topics not present inside the provided document text.
+- If a term or topic is not explicitly covered in the provided excerpt, do NOT ask any questions about it.
+- Every question prompt, correct answer, and multiple-choice distractor MUST be directly grounded in and verifiable by the uploaded document excerpt.
+
 CRITICAL UNIQUENESS MANDATE:
 - Every single question generated MUST be 100% unique and distinct.
 - NEVER repeat or duplicate questions, prompts, concepts, or options.
 - If multiple questions have the same marks, each question MUST test a DIFFERENT concept, definition, reaction, or equation from the text.
-You MUST output strictly valid JSON matching the exact requested schema, with NO markdown backticks, NO commentary, and NO explanations outside the JSON object.`;
+- Output strictly valid JSON matching the exact schema with NO markdown formatting, NO backticks, and NO conversational filler.`;
 
-  const userPrompt = `Generate exactly ${totalCount} exam questions based on the following uploaded textbook document material:
+  const userPrompt = `Generate exactly ${totalCount} exam questions based STRICTLY and ONLY on the following uploaded textbook document material:
 
-=== DOCUMENT EXCERPT START ===
+=== UPLOADED DOCUMENT MATERIAL START ===
 Document Title: ${params.documentTitle}
 Chapter ${params.chapterNumber}: ${params.chapterTitle}
 
-Content:
-${params.documentExcerpt.slice(0, 4500)}
-=== DOCUMENT EXCERPT END ===
+Document Content:
+${params.documentExcerpt.slice(0, 18000)}
+=== UPLOADED DOCUMENT MATERIAL END ===
 
 REQUIRED QUESTION DISTRIBUTION BY MARKS:
 ${distBreakdown}
@@ -120,14 +154,15 @@ CRITICAL RULES:
 7. The array must contain exactly ${totalCount} questions matching the mark distribution specified above.
 8. Return raw JSON only with key "questions".`;
 
-  const response = await fetch(GROQ_API_URL, {
+  let activeModel = model;
+  let response = await fetch(GROQ_API_URL, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey.trim()}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: model,
+      model: activeModel,
       temperature: 0.5,
       response_format: { type: 'json_object' },
       messages: [
@@ -145,7 +180,43 @@ CRITICAL RULES:
     } catch {
       // ignore parse error
     }
-    throw new Error(errorDetail);
+
+    // Auto-fallback if requested model is restricted/not found (e.g., llama-3.3-70b-versatile -> llama-3.1-8b-instant)
+    const isModelNotFound = /model_not_found|does not exist|do not have access/i.test(errorDetail);
+    const candidateFallbacks = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    const nextModel = candidateFallbacks.find(m => m !== activeModel);
+    if (isModelNotFound && nextModel) {
+      console.warn(`Model ${activeModel} not accessible, automatically falling back to ${nextModel}...`);
+      activeModel = nextModel;
+      GroqStorage.setModel(nextModel);
+      response = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey.trim()}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: activeModel,
+          temperature: 0.5,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        let fallbackErr = `Groq API HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errJson = await response.json();
+          fallbackErr = errJson?.error?.message || fallbackErr;
+        } catch {}
+        throw new Error(fallbackErr);
+      }
+    } else {
+      throw new Error(errorDetail);
+    }
   }
 
   const data = await response.json();
